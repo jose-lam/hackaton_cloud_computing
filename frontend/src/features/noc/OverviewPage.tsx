@@ -7,7 +7,7 @@ import { RiskPanel } from "./RiskPanel";
 import { useNoc } from "./noc-context";
 import { Card, CardHeader, EmptyState, ErrorState, Skeleton } from "../../components/ui";
 import { PriorityBadge, StatusBadge } from "../../components/domain";
-import { useAnalytics, useAntennas, useIncidents } from "../../lib/queries";
+import { useAnalytics, useAntennas, useHourlyTrend, useIncidents } from "../../lib/queries";
 import { useNow } from "../../lib/hooks";
 import { cn, formatAge } from "../../lib/format";
 import { poiMeta, priorityMeta } from "../../lib/labels";
@@ -17,12 +17,13 @@ export function OverviewPage() {
   const incidents = useIncidents();
   const antennas = useAntennas();
   const analytics = useAnalytics();
+  const { trend } = useHourlyTrend();
   const { openIncident } = useNoc();
   const updatedAt = Math.max(incidents.dataUpdatedAt, antennas.dataUpdatedAt, analytics.dataUpdatedAt);
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-4 p-6">
-      <KpiRow incidents={incidents.data} antennas={antennas.data} analytics={analytics.data} loading={incidents.isLoading || antennas.isLoading || analytics.isLoading} updatedAt={updatedAt} />
+      <KpiRow incidents={incidents.data} antennas={antennas.data} analytics={analytics.data} trend={trend} loading={incidents.isLoading || antennas.isLoading || analytics.isLoading} updatedAt={updatedAt} />
 
       <div className="grid gap-4 xl:grid-cols-12">
         <Card className="flex flex-col xl:col-span-8" aria-labelledby="map-title">
@@ -33,7 +34,7 @@ export function OverviewPage() {
         </Card>
         <div className="flex flex-col gap-4 xl:col-span-4">
           <PriorityNow incidents={incidents.data} loading={incidents.isLoading} error={incidents.error} onRetry={() => void incidents.refetch()} onOpen={openIncident} />
-          <RiskPanel antennas={antennas.data} analytics={analytics.data} loading={antennas.isLoading || analytics.isLoading} error={antennas.error ?? analytics.error} onRetry={() => void analytics.refetch()} />
+          <RiskPanel antennas={antennas.data} loading={antennas.isLoading} error={antennas.error} onRetry={() => void antennas.refetch()} />
         </div>
       </div>
 

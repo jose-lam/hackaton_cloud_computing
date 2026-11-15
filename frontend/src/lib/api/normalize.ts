@@ -1,6 +1,6 @@
 // Normalizadores: convierten los cuerpos del contrato (contratos/openapi.yaml) a los tipos de
 // src/types, rellenando valores por defecto. Ignoran campos extra (p. ej. PK/SK de DynamoDB).
-import type { AnalyticsSummaryResponse, Antenna, HealthStatus, HistoryEntry, Incident, PriorityLevel, RecurrentAntenna, Ticket, TicketCreateResponse, TrendPoint } from "../../types";
+import type { AnalyticsSummaryResponse, Antenna, HealthStatus, HistoryEntry, Incident, PriorityLevel, RecurrentAntenna, Ticket, TicketCreateResponse } from "../../types";
 import { HEALTH_STATUSES, PRIORITY_LEVELS } from "../../types";
 import { decodeGeohash } from "../geo";
 
@@ -59,6 +59,7 @@ export function normalizeTicket(t: Obj): Ticket {
     lon: num(t.lon, NaN),
     problem_type: str(t.problem_type, "OTRO"),
     description: str(t.description),
+    incident_time: strOrNull(t.incident_time),
     geohash: str(t.geohash),
     status: str(t.status, "Registrada"),
     ai_category: strOrNull(t.ai_category),
@@ -98,10 +99,7 @@ export function normalizeIncident(i: Obj): Incident {
     created_at: str(i.created_at),
     closed_at: strOrNull(i.closed_at),
     ai_confidence: numOrNull(i.ai_confidence ?? i.semantic_cluster_confidence),
-    ticket_ids: Array.isArray(i.ticket_ids) ? i.ticket_ids.map((x) => str(x)).filter(Boolean) : undefined,
     antenna_id: strOrNull(i.antenna_id),
-    lat: numOrNull(i.lat) ?? undefined,
-    lon: numOrNull(i.lon) ?? undefined,
   };
 }
 
@@ -153,23 +151,10 @@ export function normalizeAnalytics(raw: unknown): AnalyticsSummaryResponse {
       .filter(isObj)
       .map((p) => ({ problem_type: str(p.problem_type, "OTRO"), count: num(p.count) })),
     master_incidents: asList(d.master_incidents).filter(isObj).map(normalizeIncident),
-    // TODO(contrato): "trend" no está en AnalyticsSummaryResponse; solo lo envía el mock.
-    trend: asList(d.trend)
-      .filter(isObj)
-      .map(
-        (p): TrendPoint => ({
-          ts: str(p.ts),
-          reports: num(p.reports),
-          active_incidents: num(p.active_incidents),
-          critical_antennas: num(p.critical_antennas),
-          affected_users: num(p.affected_users),
-          mttr_minutes: numOrNull(p.mttr_minutes),
-        }),
-      ),
   };
 }
 
-/** Respaldo mientras GET /antenas no exista: antenas con riesgo desde recurrent_antennas. */
+/** Respaldo ante 404 de GET /antenas: antenas con riesgo desde recurrent_antennas. */
 export function antennasFromRecurrent(list: RecurrentAntenna[]): Antenna[] {
   return list.flatMap((r) => {
     const pos = decodeGeohash(r.geohash);

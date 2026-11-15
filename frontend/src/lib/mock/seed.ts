@@ -15,7 +15,6 @@ export interface MockState {
   incidents: MockIncident[];
   tickets: MockTicket[];
   /** Histórico horario (11 puntos) para sparklines y tendencia */
-  history: { ts: string; reports: number; active_incidents: number; critical_antennas: number; affected_users: number; mttr_minutes: number }[];
   seq: { user: number; incident: number };
 }
 
@@ -89,7 +88,6 @@ export function createSeed(): MockState {
     priority_level: levelFromScore(priority_score),
     status,
     ai_diagnosis: null,
-    ai_confidence: null,
     created_at: iso(createdMinAgo * MIN),
     closed_at: null,
     ...extra,
@@ -101,7 +99,6 @@ export function createSeed(): MockState {
         { name: "Hospital Nacional Arzobispo Loayza", type: "hospital", distance_m: 180 },
         { name: "G.U.E. Nuestra Señora de Guadalupe", type: "escuela", distance_m: 750 },
       ],
-      ai_confidence: 0.94,
       ai_diagnosis:
         "La antena ANT-HOSP-01 reporta 42 GB/min, por debajo del umbral operativo de 60 GB/min, y concentra 15 reportes ciudadanos en 25 minutos.\n\n" +
         "El patrón es compatible con una falla del enlace de transmisión (backhaul) y no con saturación: el tráfico cayó de forma abrupta y los reportes describen pérdida total de datos y llamadas.\n\n" +
@@ -109,7 +106,6 @@ export function createSeed(): MockState {
     }),
     mk("INC-002", "ANT-RES-02", "Jesús María – Residencial San Felipe", -12.0826, -77.0509, "TEMPRANO_IA", 74, "Siendo atendida", 70, {
       critical_pois: [{ name: "I.E. Residencial San Felipe", type: "escuela", distance_m: 260 }],
-      ai_confidence: 0.81,
       ai_diagnosis:
         "El modelo detectó una caída progresiva de tráfico en ANT-RES-02 (de 98 a 53 GB/min en 40 minutos) antes de alcanzar el umbral colectivo de 10 reportes.\n\n" +
         "Probable degradación del módulo de radio. Zona residencial densa con un colegio a 260 m. Prioridad ALTA; cuadrilla en camino.",
@@ -119,31 +115,32 @@ export function createSeed(): MockState {
         { name: "Parque Industrial del Rímac", type: "industria", distance_m: 420 },
         { name: "I.E. Ricardo Bentín", type: "escuela", distance_m: 610 },
       ],
-      ai_confidence: 0.88,
       ai_diagnosis:
         "ANT-REC-09 está inhabilitada (0 GB/min) y acumula 6 fallas en los últimos 14 días.\n\n" +
         "La recurrencia apunta a un problema estructural (torre o soporte afectados por vibración y humedad) y no a un fallo puntual del equipo: las tres reparaciones previas de hardware no resolvieron la causa raíz.\n\n" +
         "Recomendación: inspección estructural prioritaria y evaluar la reubicación de la antena.",
     }),
-    mk("INC-000", "ANT-MIR-04", "Miraflores – Parque Kennedy", -12.1211, -77.0297, "TEMPRANO_IA", 35, "Cerrada", 26 * 60, {
-      affected_users_count: 6,
-      closed_at: iso(26 * 60 * MIN - 52 * MIN),
-      ai_confidence: 0.72,
+    // Incidentes ya cerrados dentro de la ventana de 12 h: alimentan la tendencia y el MTTR
+    mk("INC-000", "ANT-MIR-04", "Miraflores – Parque Kennedy", -12.1211, -77.0297, "TEMPRANO_IA", 35, "Cerrada", 10 * 60, {
+      closed_at: iso(10 * 60 * MIN - 52 * MIN),
       ai_diagnosis: "Microcorte por un reinicio programado no notificado. El servicio se restableció sin intervención en campo.",
     }),
-    mk("INC-00A", "ANT-SI-05", "San Isidro – Centro Financiero", -12.0966, -77.0336, "ANTENA_UMBRAL", 44, "Solucionada", 30 * 60, {
-      affected_users_count: 4,
-      closed_at: iso(30 * 60 * MIN - 38 * MIN),
-      ai_confidence: 0.79,
+    mk("INC-00A", "ANT-SI-05", "San Isidro – Centro Financiero", -12.0966, -77.0336, "ANTENA_UMBRAL", 44, "Solucionada", 6 * 60, {
+      closed_at: iso(6 * 60 * MIN - 38 * MIN),
       ai_diagnosis: "Saturación en hora punta (>129 GB/min). Se balanceó la carga hacia celdas vecinas.",
+    }),
+    mk("INC-00B", "ANT-OLI-06", "Los Olivos – Plaza Norte", -11.9915, -77.0605, "COLECTIVO_10", 61, "Cerrada", 3.5 * 60, {
+      closed_at: iso(3.5 * 60 * MIN - 47 * MIN),
+      ai_diagnosis: "Congestión por evento masivo en el centro comercial. Se habilitó una portadora adicional y el tráfico volvió a la banda normal.",
     }),
   ];
 
   const tickets: MockTicket[] = [];
   let user = 1001;
-  const addLinked = (inc: MockIncident, n: number, path: TicketStatus[], startMin: number) => {
+  /** n tickets vinculados al incidente, creados desde startMin minutos atrás cada gapMin minutos. */
+  const addLinked = (inc: MockIncident, n: number, path: TicketStatus[], startMin: number, gapMin = 2) => {
     for (let i = 0; i < n; i++) {
-      const createdMs = (startMin - i * 2) * MIN;
+      const createdMs = (startMin - i * gapMin) * MIN;
       const lat = inc.lat + (Math.random() - 0.5) * 0.004;
       const lon = inc.lon + (Math.random() - 0.5) * 0.004;
       const type = TYPES_CYCLE[i % TYPES_CYCLE.length] ?? "OTRO";
@@ -171,7 +168,8 @@ export function createSeed(): MockState {
         priority_level: inc.priority_level,
         master_incident_id: inc.incident_id,
         created_at: iso(createdMs),
-        geohash: encodeGeohash(lat, lon, 6),
+        incident_time: iso(createdMs + (5 + (i % 4) * 5) * MIN), // el problema empezó 5-20 min antes del reporte
+        geohash: inc.geohash, // mismo geohash de zona que el incidente (agrupación del backend)
         lat,
         lon,
         history,
@@ -183,33 +181,15 @@ export function createSeed(): MockState {
   if (i1) addLinked(i1, 15, ["Registrada", "En revisión"], 36);
   if (i2) addLinked(i2, 9, ["Registrada", "En revisión", "Siendo atendida"], 68);
   if (i3) addLinked(i3, 4, ["Registrada", "En revisión"], 145);
-
-  // Histórico horario para sparklines (11 h previas)
-  const history: MockState["history"] = [];
-  const reports = [6, 4, 3, 5, 8, 11, 9, 7, 10, 14, 19];
-  const active = [1, 1, 0, 1, 1, 2, 2, 2, 2, 3, 3];
-  const crit = [2, 2, 1, 2, 2, 3, 3, 3, 3, 4, 4];
-  const affected = [4, 4, 0, 6, 6, 10, 10, 13, 13, 22, 26];
-  const mttr = [58, 55, 55, 52, 50, 50, 49, 48, 47, 46, 45];
-  const hourStart = new Date();
-  hourStart.setMinutes(0, 0, 0);
-  for (let h = 11; h >= 1; h--) {
-    const idx = 11 - h;
-    history.push({
-      ts: new Date(hourStart.getTime() - h * 60 * MIN).toISOString(),
-      reports: reports[idx] ?? 0,
-      active_incidents: active[idx] ?? 0,
-      critical_antennas: crit[idx] ?? 0,
-      affected_users: affected[idx] ?? 0,
-      mttr_minutes: mttr[idx] ?? 45,
-    });
-  }
-
+  const closedPath: TicketStatus[] = ["Registrada", "En revisión", "Siendo atendida", "Solucionada", "Cerrada"];
+  const [, , , h1, h2, h3] = incidents;
+  if (h1) addLinked(h1, 7, closedPath, 10 * 60 + 20, 9);
+  if (h2) addLinked(h2, 5, closedPath.slice(0, 4), 6 * 60 + 15, 8);
+  if (h3) addLinked(h3, 11, closedPath, 3.5 * 60 + 25, 5);
   return {
     antennas,
     incidents,
     tickets,
-    history,
     seq: { user, incident: 3 },
   };
 }

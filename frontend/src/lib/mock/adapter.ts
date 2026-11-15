@@ -5,6 +5,8 @@
 import type {
   AnalyticsSummaryResponse,
   Antenna,
+  AntennaListResponse,
+  IncidentListResponse,
   HistoryEntry,
   Incident,
   ProblemType,
@@ -91,7 +93,6 @@ function createIncident(zoneName: string, lat: number, lon: number, trigger: Inc
     priority_level: levelFromScore(score),
     status: "Registrada",
     ai_diagnosis: null, // Gemini aún analizando: el front muestra skeleton
-    ai_confidence: null,
     created_at: iso(),
     closed_at: null,
   };
@@ -104,7 +105,6 @@ function createIncident(zoneName: string, lat: number, lon: number, trigger: Inc
   }
   // Diagnóstico de IA "llega" unos segundos después
   setTimeout(() => {
-    inc.ai_confidence = 0.86;
     inc.critical_pois = HOTSPOT_POIS[zoneName] ?? [];
     inc.ai_diagnosis =
       `Se detectó una caída anticipada de tráfico en ${ant?.antenna_id ?? "la antena de la zona"} (${ant?.last_traffic_gb ?? 48} GB/min) ` +
@@ -141,6 +141,7 @@ function newTicket(input: TicketCreateRequest & { zone_name: string }): MockTick
   const now = iso();
   return {
     ...input,
+    incident_time: input.incident_time ?? null,
     ticket_id: randomId("TCK"),
     status: "Registrada",
     ai_category: null,
@@ -151,6 +152,30 @@ function newTicket(input: TicketCreateRequest & { zone_name: string }): MockTick
     geohash: encodeGeohash(input.lat, input.lon, 6), // misma precisión que api_crud.py
     history: [{ old_status: null, new_status: "Registrada", changed_by: "CIUDADANO", note: "Reporte recibido", timestamp: now }],
   };
+}
+
+/** Esquema Incidente exacto (sin lat/lon ni antenna_id internos del mock). */
+function toIncidente(inc: MockIncident): Incident {
+  return {
+    incident_id: inc.incident_id,
+    geohash: inc.geohash,
+    zone_name: inc.zone_name,
+    trigger_type: inc.trigger_type,
+    affected_users_count: inc.affected_users_count,
+    critical_pois: inc.critical_pois,
+    priority_score: inc.priority_score,
+    priority_level: inc.priority_level,
+    status: inc.status,
+    ai_diagnosis: inc.ai_diagnosis,
+    created_at: inc.created_at,
+    closed_at: inc.closed_at,
+  };
+}
+
+/** Esquema Antena exacto. */
+function toAntena(a: Antenna): Antenna {
+  const { antenna_id, zone_name, lat, lon, geohash, last_traffic_gb, health_status, updated_at, structural_risk } = a;
+  return { antenna_id, zone_name, lat, lon, geohash, last_traffic_gb, health_status, updated_at, structural_risk };
 }
 
 /** Quita los campos internos del mock: devuelve exactamente un TicketDetail. */
@@ -189,7 +214,7 @@ function generateReport() {
     if (!spot) return;
     const lat = spot.lat + (Math.random() - 0.5) * 0.003;
     const lon = spot.lon + (Math.random() - 0.5) * 0.003;
-    const t = newTicket({ user_id: userId, ...contact, problem_type: type, description: desc, location_text: spot.zone, zone_name: spot.zone, lat, lon });
+    const t = newTicket({ user_id: userId, ...contact, problem_type: type, description: desc, location_text: spot.zone, zone_name: spot.zone, lat, lon, incident_time: iso(10 * MIN) });
     state.tickets.push(t);
     const active = nearestActiveIncident(lat, lon);
     if (active) {
@@ -204,7 +229,7 @@ function generateReport() {
     if (!inc) return;
     const lat = inc.lat + (Math.random() - 0.5) * 0.003;
     const lon = inc.lon + (Math.random() - 0.5) * 0.003;
-    const t = newTicket({ user_id: userId, ...contact, problem_type: type, description: desc, location_text: inc.zone_name, zone_name: inc.zone_name, lat, lon });
+    const t = newTicket({ user_id: userId, ...contact, problem_type: type, description: desc, location_text: inc.zone_name, zone_name: inc.zone_name, lat, lon, incident_time: iso(10 * MIN) });
     state.tickets.push(t);
     linkTicketToIncident(t, inc);
   }
@@ -239,11 +264,6 @@ function analytics(): AnalyticsSummaryResponse {
   const mttr = closed.length ? Math.round((closed.reduce((s, i) => s + (Date.parse(i.closed_at ?? "") - Date.parse(i.created_at)) / MIN, 0) / closed.length) * 100) / 100 : 0;
   const active = state.incidents.filter((i) => isOpen(i.status));
   const affected = active.reduce((s, i) => s + i.affected_users_count, 0);
-  const critAnts = state.antennas.filter((a) => a.health_status !== "NORMAL").length;
-  const hourStart = new Date();
-  hourStart.setMinutes(0, 0, 0);
-  const reportsThisHour = state.tickets.filter((t) => Date.parse(t.created_at) >= hourStart.getTime()).length;
-
   return {
     kpis: {
       total_tickets: state.tickets.length,
@@ -260,19 +280,7 @@ function analytics(): AnalyticsSummaryResponse {
       .filter((a) => a.structural_risk)
       .map((a) => ({ antenna_id: a.antenna_id, health_status: a.health_status, last_traffic_gb: a.last_traffic_gb, structural_risk: true, zone_name: a.zone_name, geohash: a.geohash })),
     top_problem_types: [...typeCounts].map(([problem_type, count]) => ({ problem_type, count })).sort((a, b) => b.count - a.count).slice(0, 10),
-    master_incidents: [...state.incidents].sort((a, b) => b.priority_score - a.priority_score).map(({ lat: _lat, lon: _lon, ...inc }) => inc),
-    // TODO(contrato): "trend" es una extensión propuesta; el backend real no la envía.
-    trend: [
-      ...state.history,
-      {
-        ts: hourStart.toISOString(),
-        reports: 12 + reportsThisHour, // hora en curso: base histórica + reportes recientes
-        active_incidents: active.length,
-        critical_antennas: critAnts,
-        affected_users: affected,
-        mttr_minutes: mttr || 45,
-      },
-    ],
+    master_incidents: [...state.incidents].sort((a, b) => b.priority_score - a.priority_score).map(toIncidente),
   };
 }
 
@@ -290,6 +298,12 @@ function postTicket(body: unknown): TicketCreateResponse {
   const lon = Number(body.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) throw badRequest("Coordenadas invalidas");
   const s = (v: unknown) => String(v ?? "");
+  // incident_time: opcional, ISO 8601
+  let incidentTime: string | undefined;
+  if (body.incident_time !== undefined && body.incident_time !== null && body.incident_time !== "") {
+    if (typeof body.incident_time !== "string" || Number.isNaN(Date.parse(body.incident_time))) throw badRequest("incident_time invalido");
+    incidentTime = new Date(body.incident_time).toISOString();
+  }
   const t = newTicket({
     user_id: s(body.user_id),
     service_number: s(body.service_number),
@@ -300,6 +314,7 @@ function postTicket(body: unknown): TicketCreateResponse {
     lon,
     problem_type: s(body.problem_type),
     description: s(body.description).slice(0, 300),
+    incident_time: incidentTime,
     zone_name: s(body.location_text),
   });
   state.tickets.push(t);
@@ -360,10 +375,8 @@ export async function mockRequest<T>(method: string, path: string, { query = {},
   else if (m === "GET" && path === "/tickets") out = getTickets(query);
   else if (m === "PATCH" && statusMatch) out = patchStatus(decodeURIComponent(statusMatch[1] ?? ""), body);
   else if (m === "GET" && path === "/analytics/resumen") out = analytics();
-  // TODO(contrato): GET /incidentes y GET /antenas son endpoints propuestos (aún no están en openapi.yaml).
-  else if (m === "GET" && path === "/incidentes")
-    out = state.incidents.map((inc): Incident => ({ ...inc, ticket_ids: state.tickets.filter((t) => t.master_incident_id === inc.incident_id).map((t) => t.ticket_id) }));
-  else if (m === "GET" && path === "/antenas") out = antennasSnapshot();
+  else if (m === "GET" && path === "/incidentes") out = { items: state.incidents.map(toIncidente) } satisfies IncidentListResponse;
+  else if (m === "GET" && path === "/antenas") out = { items: antennasSnapshot().map(toAntena) } satisfies AntennaListResponse;
   else throw notFound("Ruta no encontrada");
   return clone(out) as T;
 }

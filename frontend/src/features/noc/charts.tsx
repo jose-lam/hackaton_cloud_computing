@@ -2,7 +2,7 @@
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis, type TooltipProps } from "recharts";
 import { formatHour, formatNumber } from "../../lib/format";
 import { problemLabel } from "../../lib/labels";
-import type { AnalyticsSummary } from "../../types";
+import type { AnalyticsSummary, TrendPoint } from "../../types";
 
 const AXIS = { fill: "#7a8aa0", fontSize: 11, fontFamily: '"JetBrains Mono Variable", monospace' };
 const GRID = "rgba(148,170,200,0.08)";
@@ -35,7 +35,7 @@ function ChartTooltip({ active, payload, label, unit, labelFormatter }: TooltipP
   );
 }
 
-export function TrendChart({ data }: { data: AnalyticsSummary["trend"] }) {
+export function TrendChart({ data }: { data: TrendPoint[] }) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: -12 }}>

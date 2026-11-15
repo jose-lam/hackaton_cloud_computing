@@ -63,7 +63,7 @@ export function NetworkMap({ antennas, incidents, loading, onOpenIncident, class
       (incidents ?? [])
         .filter((i) => !isClosedStatus(i.status))
         .map((i) => {
-          const pos = i.lat !== undefined && i.lon !== undefined ? { lat: i.lat, lon: i.lon } : decodeGeohash(i.geohash);
+          const pos = decodeGeohash(i.geohash);
           return pos ? { ...i, pos } : null;
         })
         .filter((x): x is Incident & { pos: { lat: number; lon: number } } => x !== null)

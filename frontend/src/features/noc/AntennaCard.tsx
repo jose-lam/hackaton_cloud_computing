@@ -2,7 +2,7 @@ import { ShieldAlert } from "lucide-react";
 import { HealthBadge } from "../../components/domain";
 import { cn, formatRelative } from "../../lib/format";
 import { healthMeta, TRAFFIC } from "../../lib/labels";
-import type { Antenna, RecurrentAntenna } from "../../types";
+import type { Antenna } from "../../types";
 
 const pct = (v: number) => `${Math.min(100, Math.max(0, (v / TRAFFIC.SCALE_MAX) * 100))}%`;
 
@@ -44,8 +44,8 @@ export function TrafficBar({ value, status }: { value: number; status: Antenna["
   );
 }
 
-export function AntennaCard({ antenna, recurrent, now, highlight }: { antenna: Antenna; recurrent?: RecurrentAntenna; now: number; highlight?: boolean }) {
-  const risk = antenna.structural_risk || Boolean(recurrent);
+export function AntennaCard({ antenna, now, highlight }: { antenna: Antenna; now: number; highlight?: boolean }) {
+  const risk = antenna.structural_risk;
   const disabled = antenna.health_status === "INHABILITADA";
   return (
     <article
@@ -77,7 +77,6 @@ export function AntennaCard({ antenna, recurrent, now, highlight }: { antenna: A
             <ShieldAlert className="h-3.5 w-3.5" aria-hidden /> Riesgo estructural
           </span>
         ) : null}
-        {recurrent && <span className="text-xs text-fg-muted">Falla recurrente</span>}
         {antenna.updated_at && <span className="num ml-auto text-2xs text-fg-subtle">Act. {formatRelative(antenna.updated_at, now)}</span>}
       </footer>
     </article>

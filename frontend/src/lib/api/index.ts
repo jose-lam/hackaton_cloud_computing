@@ -21,8 +21,25 @@ async function withContractErrors<T>(p: Promise<T>, messages: Partial<Record<num
 
 /** API Gateway responde 403/404 cuando la ruta no está desplegada. */
 const isMissingRoute = (err: unknown) => err instanceof ApiError && (err.status === 404 || err.status === 403);
-/** Rutas propuestas que ya respondieron 403/404: no se vuelven a pedir en cada refresco. */
+/** Rutas que respondieron 403/404 en esta sesión: no se vuelven a pedir en cada refresco. */
 const missingRoutes = new Set<string>();
+
+/**
+ * Único punto de respaldo: GET {path} → { items } es la fuente principal; solo si la ruta
+ * responde 403/404 (backend sin desplegar) se usa `legacy`, con un aviso en consola una vez.
+ */
+async function listWithFallback<T>(send: Requester, path: string, normalize: (data: unknown) => T[], legacy: () => Promise<T[]>, signal?: AbortSignal): Promise<T[]> {
+  if (!missingRoutes.has(path)) {
+    try {
+      return normalize(await withRetry(() => send<unknown>("GET", path, { signal }), { signal }));
+    } catch (err) {
+      if (!isMissingRoute(err)) throw err;
+      missingRoutes.add(path);
+      console.warn(`[Sentinel] GET ${path} no está disponible (${(err as ApiError).status}). Se usa el respaldo de /analytics/resumen; el NOC quedará incompleto.`);
+    }
+  }
+  return legacy();
+}
 
 export function createApi(send: Requester): SentinelApi {
   const getAnalytics: SentinelApi["getAnalytics"] = async (signal) =>
@@ -54,38 +71,18 @@ export function createApi(send: Requester): SentinelApi {
     // GET /analytics/resumen → 200 AnalyticsSummaryResponse
     getAnalytics,
 
-    // TODO(contrato): GET /incidentes no existe aún en openapi.yaml (endpoint propuesto).
-    // Si la ruta no está desplegada, se usa analytics.master_incidents como respaldo.
-    async getIncidents(signal) {
-      if (!missingRoutes.has("/incidentes")) {
-        try {
-          const data = await withRetry(() => send<unknown>("GET", "/incidentes", { signal }), { signal });
-          return normalizeList(data, normalizeIncident, "incidents", "incidentes");
-        } catch (err) {
-          if (!isMissingRoute(err)) throw err;
-          missingRoutes.add("/incidentes");
-        }
-      }
-      return (await getAnalytics(signal)).master_incidents;
-    },
+    // GET /incidentes → 200 { items: Incidente[] } · respaldo: analytics.master_incidents
+    getIncidents: (signal) =>
+      listWithFallback(send, "/incidentes", (d) => normalizeList(d, normalizeIncident), async () => (await getAnalytics(signal)).master_incidents, signal),
 
-    // TODO(contrato): GET /antenas no existe aún en openapi.yaml (endpoint propuesto).
-    // Si la ruta no está desplegada, se reconstruyen las antenas con riesgo a partir de
-    // analytics.recurrent_antennas (lat/lon decodificados del geohash que envía el backend).
-    async getAntennas(signal) {
-      if (!missingRoutes.has("/antenas")) {
-        try {
-          const data = await withRetry(() => send<unknown>("GET", "/antenas", { signal }), { signal });
-          return normalizeList(data, normalizeAntenna, "antennas", "antenas");
-        } catch (err) {
-          if (!isMissingRoute(err)) throw err;
-          missingRoutes.add("/antenas");
-        }
-      }
-      return antennasFromRecurrent((await getAnalytics(signal)).recurrent_antennas);
-    },
+    // GET /antenas → 200 { items: Antena[] } · respaldo: analytics.recurrent_antennas
+    getAntennas: (signal) =>
+      listWithFallback(send, "/antenas", (d) => normalizeList(d, normalizeAntenna), async () => antennasFromRecurrent((await getAnalytics(signal)).recurrent_antennas), signal),
   };
 }
+
+/** Tickets de la zona vinculados al incidente (master_incident_id). */
+export const linkedTickets = (tickets: Ticket[], incidentId: string): Ticket[] => tickets.filter((t) => t.master_incident_id === incidentId);
 
 export const api: SentinelApi = createApi(CONFIG.MOCK ? mockRequest : request);
 export { ApiError };
@@ -95,11 +92,8 @@ export { ApiError };
  * vinculados (el contrato no define un endpoint de estado para incidentes).
  */
 export async function updateIncidentStatus(incident: Incident, status: TicketStatus, note: string): Promise<{ updated: number; failed: number }> {
-  let ids = incident.ticket_ids ?? [];
-  if (!ids.length && incident.geohash) {
-    const tickets: Ticket[] = await api.getTickets({ geohash: incident.geohash });
-    ids = tickets.filter((t) => !t.master_incident_id || t.master_incident_id === incident.incident_id).map((t) => t.ticket_id);
-  }
+  const tickets: Ticket[] = incident.geohash ? await api.getTickets({ geohash: incident.geohash }) : [];
+  const ids = linkedTickets(tickets, incident.incident_id).map((t) => t.ticket_id);
   if (!ids.length) throw new ApiError("El incidente no tiene tickets vinculados para actualizar.", 404, false);
   // PATCH con un reintento solo ante errores transitorios
   const results = await Promise.allSettled(ids.map((id) => withRetry(() => api.updateTicketStatus(id, { new_status: status, note }), { retries: 1 })));

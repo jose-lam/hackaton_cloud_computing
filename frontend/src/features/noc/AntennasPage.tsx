@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { RadioTower, Search } from "lucide-react";
 import { AntennaCard } from "./AntennaCard";
 import { EmptyState, ErrorState, Skeleton } from "../../components/ui";
-import { useAnalytics, useAntennas } from "../../lib/queries";
+import { useAntennas } from "../../lib/queries";
 import { useNow } from "../../lib/hooks";
 import { cn } from "../../lib/format";
 import { HEALTH_META } from "../../lib/labels";
@@ -13,24 +13,22 @@ const ORDER: Record<HealthStatus, number> = { CAIDA: 0, INHABILITADA: 1, SATURAD
 
 export function AntennasPage() {
   const antennas = useAntennas();
-  const analytics = useAnalytics();
   const now = useNow(30_000);
   const [params] = useSearchParams();
   const highlight = params.get("q") ?? "";
   const [query, setQuery] = useState(highlight);
   const [filter, setFilter] = useState<HealthStatus | "ALL" | "RISK">("ALL");
 
-  const recurrent = useMemo(() => new Map((analytics.data?.recurrent_antennas ?? []).map((r) => [r.antenna_id, r])), [analytics.data]);
   const list = useMemo(() => {
     const q = query.trim().toLowerCase();
     return [...(antennas.data ?? [])]
-      .filter((a) => (filter === "ALL" ? true : filter === "RISK" ? a.structural_risk || recurrent.has(a.antenna_id) : a.health_status === filter))
+      .filter((a) => (filter === "ALL" ? true : filter === "RISK" ? a.structural_risk : a.health_status === filter))
       .filter((a) => !q || `${a.antenna_id} ${a.zone_name}`.toLowerCase().includes(q))
       .sort((a, b) => ORDER[a.health_status] - ORDER[b.health_status] || a.antenna_id.localeCompare(b.antenna_id));
-  }, [antennas.data, filter, query, recurrent]);
+  }, [antennas.data, filter, query]);
 
   const count = (f: typeof filter) =>
-    (antennas.data ?? []).filter((a) => (f === "ALL" ? true : f === "RISK" ? a.structural_risk || recurrent.has(a.antenna_id) : a.health_status === f)).length;
+    (antennas.data ?? []).filter((a) => (f === "ALL" ? true : f === "RISK" ? a.structural_risk : a.health_status === f)).length;
 
   const chips: { id: typeof filter; label: string }[] = [
     { id: "ALL", label: "Todas" },
@@ -101,7 +99,7 @@ export function AntennasPage() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {list.map((a) => (
-            <AntennaCard key={a.antenna_id} antenna={a} recurrent={recurrent.get(a.antenna_id)} now={now} highlight={highlight === a.antenna_id} />
+            <AntennaCard key={a.antenna_id} antenna={a} now={now} highlight={highlight === a.antenna_id} />
           ))}
         </div>
       )}
