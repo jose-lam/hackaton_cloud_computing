@@ -137,3 +137,34 @@ aws events describe-event-bus \
   --name "$BUS_NAME" \
   --query '[Name,Arn]' \
   --output table
+
+echo "Configurando SSM Parameter Store..."
+
+PARAMETERS=(
+  "/telecorp/thresholds/min_gb:60"
+  "/telecorp/thresholds/max_gb:129"
+  "/telecorp/thresholds/collective_users:10"
+  "/telecorp/thresholds/window_hours:24"
+  "/telecorp/thresholds/recurrence_days:3"
+)
+
+for entry in "${PARAMETERS[@]}"; do
+  name="${entry%%:*}"
+  value="${entry#*:}"
+
+  aws ssm put-parameter \
+    --name "$name" \
+    --value "$value" \
+    --type SecureString \
+    --overwrite \
+    --query Version \
+    --output text
+
+  echo "Configurado: $name"
+done
+
+echo "Parámetros SSM:"
+aws ssm describe-parameters \
+  --parameter-filters "Key=Name,Option=BeginsWith,Values=/telecorp/thresholds/" \
+  --query 'Parameters[*].[Name,Type]' \
+  --output table
