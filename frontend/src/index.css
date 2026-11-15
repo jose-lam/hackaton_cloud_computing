@@ -1,0 +1,262 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------- Tokens de diseño (canales R G B) ---------- */
+:root {
+  color-scheme: dark;
+
+  /* Superficies: grafito azulado */
+  --bg: 8 12 18;
+  --surface-1: 13 19 27;
+  --surface-2: 19 26 37;
+  --surface-3: 27 36 50;
+  --line: 148 170 200; /* se usa con opacidad: border-line/10 */
+
+  /* Texto: 3 niveles (AA sobre surface-1) */
+  --fg: 231 238 245;
+  --fg-muted: 160 175 194;
+  --fg-subtle: 122 138 160;
+
+  /* Acento único: teal/cian */
+  --accent: 45 212 191;
+  --accent-strong: 20 184 166;
+  --accent-fg: 4 30 27;
+
+  /* Semánticos fijos */
+  --prio-critica: 251 79 112;
+  --prio-alta: 251 146 60;
+  --prio-media: 250 196 64;
+  --prio-baja: 140 160 188;
+
+  --health-normal: 52 211 120;
+  --health-caida: 248 82 82;
+  --health-saturada: 167 139 250;
+  --health-inhabilitada: 120 132 150;
+
+  --ok: 52 211 120;
+  --danger: 248 82 82;
+  --warn: 250 196 64;
+
+  --shadow-card: 0 1px 0 0 rgb(255 255 255 / 0.03) inset, 0 1px 2px 0 rgb(0 0 0 / 0.4);
+  --shadow-pop: 0 12px 32px -8px rgb(0 0 0 / 0.6), 0 0 0 1px rgb(var(--line) / 0.14);
+}
+
+/* Tema claro del portal ciudadano: mismos tokens, valores claros (AA sobre blanco) */
+.theme-light {
+  color-scheme: light;
+  --bg: 244 246 249;
+  --surface-1: 255 255 255;
+  --surface-2: 248 250 252;
+  --surface-3: 236 240 245;
+  --line: 30 41 59;
+
+  --fg: 15 23 34;
+  --fg-muted: 61 74 92;
+  --fg-subtle: 95 108 128;
+
+  --accent: 15 118 110;
+  --accent-strong: 17 94 89;
+  --accent-fg: 255 255 255;
+
+  --prio-critica: 205 24 66;
+  --prio-alta: 194 65 12;
+  --prio-media: 161 98 7;
+  --prio-baja: 90 105 128;
+
+  --health-normal: 21 128 61;
+  --health-caida: 200 30 30;
+  --health-saturada: 109 40 217;
+  --health-inhabilitada: 100 116 139;
+
+  --ok: 21 128 61;
+  --danger: 200 30 30;
+  --warn: 161 98 7;
+
+  --shadow-card: 0 1px 2px 0 rgb(15 23 42 / 0.05), 0 1px 3px 0 rgb(15 23 42 / 0.04);
+  --shadow-pop: 0 16px 40px -12px rgb(15 23 42 / 0.22), 0 0 0 1px rgb(var(--line) / 0.1);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-bg font-sans text-base text-fg antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+  ::selection {
+    background: rgb(var(--accent) / 0.3);
+  }
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent));
+    outline-offset: 2px;
+  }
+  /* Scrollbars discretos */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--line) / 0.2) transparent;
+  }
+}
+
+@layer utilities {
+  .num {
+    font-family: theme("fontFamily.mono");
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "zero" 0;
+  }
+  .surface-glass {
+    background: rgb(var(--surface-1) / 0.88);
+    backdrop-filter: blur(10px);
+  }
+}
+
+/* ---------- Leaflet ---------- */
+.leaflet-container {
+  background: rgb(var(--bg));
+  font: inherit;
+}
+/* El reset de Tailwind (img/svg max-width; height:auto) deforma capas de Leaflet */
+.leaflet-container img,
+.leaflet-container svg {
+  max-width: none !important;
+  max-height: none !important;
+}
+.leaflet-overlay-pane svg {
+  height: revert-layer;
+}
+.leaflet-control-attribution {
+  background: rgb(var(--surface-1) / 0.85) !important;
+  color: rgb(var(--fg-muted)) !important;
+  font-size: 11px;
+  border-top-left-radius: 6px;
+}
+.leaflet-control-attribution a {
+  color: rgb(var(--accent)) !important;
+}
+.leaflet-bar a {
+  background: rgb(var(--surface-2)) !important;
+  color: rgb(var(--fg)) !important;
+  border-color: rgb(var(--line) / 0.15) !important;
+}
+.leaflet-bar a:hover {
+  background: rgb(var(--surface-3)) !important;
+}
+.leaflet-bar {
+  border: 1px solid rgb(var(--line) / 0.15) !important;
+  box-shadow: none !important;
+}
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: rgb(var(--surface-2));
+  color: rgb(var(--fg));
+  border: 1px solid rgb(var(--line) / 0.16);
+  box-shadow: 0 12px 32px -8px rgb(0 0 0 / 0.6);
+}
+.leaflet-popup-content-wrapper {
+  border-radius: 10px;
+}
+.leaflet-popup-content {
+  margin: 12px 14px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.leaflet-container a.leaflet-popup-close-button {
+  color: rgb(var(--fg-muted));
+}
+
+/* OSM oscurecido (NOC sin key de CARTO): invierte luminancia conservando el tono */
+.tiles-dark {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.88) saturate(0.3);
+}
+
+/* Fondo del contenedor mientras cargan los tiles claros */
+.theme-light .leaflet-container {
+  background: #eef1f4;
+}
+
+/* Marcador arrastrable del portal */
+.pin-marker {
+  width: 32px;
+  height: 40px;
+  filter: drop-shadow(0 4px 6px rgb(15 23 42 / 0.3));
+  transition: transform 150ms ease;
+}
+.leaflet-marker-draggable:active .pin-marker,
+.leaflet-drag-target .pin-marker {
+  transform: translateY(-4px) scale(1.06);
+}
+
+/* Fondo decorativo del hero: rejilla de radar */
+.hero-grid {
+  background-image: radial-gradient(circle at 1px 1px, rgb(var(--line) / 0.12) 1px, transparent 0);
+  background-size: 20px 20px;
+}
+
+/* Marcadores de antena (divIcon) */
+.ant-marker {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 9999px;
+  border: 2px solid rgb(var(--bg));
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.25), 0 2px 6px rgb(0 0 0 / 0.5);
+  transition: transform 150ms ease;
+}
+.ant-marker:hover {
+  transform: scale(1.12);
+}
+.ant-marker svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Pulso para incidentes críticos */
+.crit-pulse {
+  position: relative;
+  width: 18px;
+  height: 18px;
+}
+.crit-pulse::before,
+.crit-pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 2px solid rgb(var(--prio-critica));
+  animation: crit-ring 2s ease-out infinite;
+}
+.crit-pulse::after {
+  animation-delay: 1s;
+}
+@keyframes crit-ring {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(4.2);
+    opacity: 0;
+  }
+}
+
+/* ---------- Movimiento reducido ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .crit-pulse::before,
+  .crit-pulse::after {
+    animation: none;
+    opacity: 0.6;
+    transform: scale(1.8);
+  }
+}

@@ -1,12 +1,12 @@
 # Frontend · Red TeleCorp Sentinel AI
 
-Web estática (HTML + Tailwind CDN + JS vanilla + Chart.js + Leaflet), sin build. Lista para S3 + CloudFront.
+SPA en Vite + React 18 + TypeScript + Tailwind, con HashRouter (funciona en S3/CloudFront sin reglas de rewrite).
 
-- **Correr local:** `cd frontend && python3 -m http.server 8000` y abrir http://localhost:8000/?mock=1 (portal) o http://localhost:8000/noc.html?mock=1 (NOC).
-- **Modo demo:** `MOCK_MODE: true` en `config.js` o `?mock=1` en la URL. Usa `?mock=0` para forzar el API real y `?mockerr=0` para desactivar los errores simulados.
-- **Datos demo:** ticket `TCK-DEMO01`, usuario `U-1001`. Se guardan en localStorage (clave `telecorp_sentinel_mock_v1`); bórrala para reiniciar.
-- **API real:** edita `config.js` → `API_BASE_URL: "https://<apiId>.execute-api.us-east-1.amazonaws.com/prod"` y `MOCK_MODE: false`. Sin secretos en el front.
-- **CORS:** API Gateway debe permitir el origen de CloudFront para `GET`, `POST` y `PATCH`.
-- **Archivos:** `index.html` + `portal.js` (ciudadano), `noc.html` + `noc.js` (NOC), `api.js` (cliente REST, timeout 8 s), `mock.js`, `app.js` (utilidades), `styles.css`.
-- **Contrato:** el PATCH envía `new_status` (OpenAPI) y `status`. GET acepta un arreglo o `{items}`. Si `/incidentes` no existe, se usan los `master_incidents` de `/analytics/resumen`.
-- **Despliegue:** `aws s3 sync frontend/ s3://<bucket> --exclude "*.md"` e invalidar CloudFront.
+- **Instalar y correr:** `cd frontend && npm install && npm run dev`, luego abre http://localhost:5173/#/ (portal ciudadano), `#/seguimiento` o `#/noc` (centro de operaciones).
+- **Build estático:** `npm run build` genera `dist/` (base `./`). Revisa con `npm run preview`. Calidad: `npm run lint` y `npm run typecheck`.
+- **Variables:** `npm run dev` usa el mock; `npm run build` usa `.env.production` (API real de AWS). Para otro entorno copia `.env.example` a `.env`. `VITE_API_BASE_URL` es la URL del API Gateway sin `/` final. `VITE_MOCK` usa `true` (por defecto) para el backend simulado o `false` para el API real. `VITE_CARTO_API_KEY` (opcional, gratis en dashboard.basemaps.carto.com) activa los mapas de CARTO; sin ella se usa OpenStreetMap. Se leen al compilar: vuelve a ejecutar `npm run build` tras cambiarlas.
+- **En la URL:** `?mock=1` o `?mock=0` fuerza el modo; `?mockerr=0` desactiva los errores simulados y `?mockerr=1` fuerza fallos para ver los estados de error.
+- **Demo:** ticket `TCK-DEMO01`, usuario `U-1001`. Cada ~20 s llega un reporte nuevo y cada ~100 s nace un incidente. `#/noc?incidente=INC-001` abre el detalle.
+- **Atajos:** Ctrl+K (⌘K en Mac) abre la paleta de comandos; Esc cierra paneles.
+- **Contrato:** tipos y cliente siguen `contratos/openapi.yaml`. `GET /incidentes` y `GET /antenas` son propuestos (TODO): sin ellos el NOC usa `master_incidents` y `recurrent_antennas` de `/analytics/resumen`.
+- **Despliegue:** `aws s3 sync dist/ s3://<bucket> --delete` e invalida CloudFront. API Gateway debe permitir CORS desde ese origen.
