@@ -1,0 +1,204 @@
+{
+  "region": "us-east-1",
+  "tables": [
+    {
+      "create_table_input": {
+        "TableName": "TeleCorp_Operaciones",
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          { "AttributeName": "PK", "AttributeType": "S" },
+          { "AttributeName": "SK", "AttributeType": "S" },
+          { "AttributeName": "GSI1PK", "AttributeType": "S" },
+          { "AttributeName": "GSI1SK", "AttributeType": "S" }
+        ],
+        "KeySchema": [
+          { "AttributeName": "PK", "KeyType": "HASH" },
+          { "AttributeName": "SK", "KeyType": "RANGE" }
+        ],
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "GSI1_ZonaEstado",
+            "KeySchema": [
+              { "AttributeName": "GSI1PK", "KeyType": "HASH" },
+              { "AttributeName": "GSI1SK", "KeyType": "RANGE" }
+            ],
+            "Projection": {
+              "ProjectionType": "ALL"
+            }
+          }
+        ]
+      },
+      "ttl_specification": {
+        "TableName": "TeleCorp_Operaciones",
+        "TimeToLiveSpecification": {
+          "Enabled": true,
+          "AttributeName": "ttl_epoch"
+        }
+      },
+      "entities": {
+        "TicketUsuario": {
+          "PK": "TICKET#<ticket_id>",
+          "SK": "META",
+          "GSI1PK": "ZONA#<geohash>",
+          "GSI1SK": "TS#<iso_ts>",
+          "attributes": [
+            "ticket_id",
+            "user_id",
+            "service_number",
+            "email",
+            "phone",
+            "location_text",
+            "lat",
+            "lon",
+            "geohash",
+            "problem_type",
+            "description",
+            "ai_category",
+            "status",
+            "master_incident_id",
+            "priority_score",
+            "priority_level",
+            "created_at",
+            "updated_at"
+          ],
+          "allowed_status": [
+            "Registrada",
+            "En revisión",
+            "Siendo atendida",
+            "Solucionada",
+            "Cerrada"
+          ]
+        },
+        "HistorialAuditoria": {
+          "PK": "TICKET#<ticket_id>",
+          "SK": "HIST#<iso_ts>",
+          "GSI1PK": "USER#<user_id>",
+          "GSI1SK": "TS#<iso_ts>",
+          "attributes": [
+            "ticket_id",
+            "old_status",
+            "new_status",
+            "changed_by",
+            "note",
+            "timestamp"
+          ]
+        },
+        "EstadoAntena": {
+          "PK": "ANTENNA#<antenna_id>",
+          "SK": "CURRENT",
+          "GSI1PK": "ZONA#<geohash>",
+          "GSI1SK": "ANTENNA#<antenna_id>",
+          "attributes": [
+            "antenna_id",
+            "zone_name",
+            "lat",
+            "lon",
+            "geohash",
+            "last_traffic_gb",
+            "health_status",
+            "updated_at",
+            "structural_risk"
+          ],
+          "allowed_health_status": [
+            "INHABILITADA",
+            "CAIDA",
+            "NORMAL",
+            "SATURADA"
+          ]
+        },
+        "HistorialFallaAntena": {
+          "PK": "ANTENNA#<antenna_id>",
+          "SK": "EVENT#<YYYY-MM-DD>#<iso_ts>",
+          "GSI1PK": "FAILURES#ALL",
+          "GSI1SK": "TS#<iso_ts>",
+          "attributes": [
+            "antenna_id",
+            "date_day",
+            "health_status",
+            "traffic_gb",
+            "recovered_at",
+            "duration_sec"
+          ]
+        },
+        "IncidenteMaestro": {
+          "PK": "INCIDENT#<incident_id>",
+          "SK": "META",
+          "GSI1PK": "ACTIVE#<is_active>",
+          "GSI1SK": "SCORE#<00000>",
+          "attributes": [
+            "incident_id",
+            "geohash",
+            "zone_name",
+            "trigger_type",
+            "affected_users_count",
+            "critical_pois",
+            "priority_score",
+            "priority_level",
+            "status",
+            "ai_diagnosis",
+            "created_at",
+            "closed_at"
+          ]
+        }
+      }
+    },
+    {
+      "create_table_input": {
+        "TableName": "TeleCorp_VentanasZonales",
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          { "AttributeName": "PK", "AttributeType": "S" },
+          { "AttributeName": "SK", "AttributeType": "S" }
+        ],
+        "KeySchema": [
+          { "AttributeName": "PK", "KeyType": "HASH" },
+          { "AttributeName": "SK", "KeyType": "RANGE" }
+        ]
+      },
+      "ttl_specification": {
+        "TableName": "TeleCorp_VentanasZonales",
+        "TimeToLiveSpecification": {
+          "Enabled": true,
+          "AttributeName": "expires_at"
+        }
+      },
+      "entities": {
+        "UsuarioUnicoVentana": {
+          "PK": "WIN#<geohash>",
+          "SK": "USER#<user_id>",
+          "attributes": [
+            "first_ticket_id",
+            "problem_type",
+            "description",
+            "expires_at"
+          ]
+        },
+        "ContadorAtomicoZonal": {
+          "PK": "WIN#<geohash>",
+          "SK": "COUNTER",
+          "attributes": [
+            "unique_users_count",
+            "active_incident_id",
+            "expires_at"
+          ]
+        },
+        "RegistroNotificacion": {
+          "PK": "TICKET#<ticket_id>",
+          "SK": "NOTIF#<iso_ts>",
+          "GSI1PK": "INCIDENT#<incident_id>",
+          "GSI1SK": "TS#<iso_ts>",
+          "attributes": [
+            "ticket_id",
+            "incident_id",
+            "channel",
+            "recipient",
+            "milestone",
+            "delivery_status",
+            "sns_message_id",
+            "timestamp"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,274 @@
+{
+  "Comment": "Orquestador principal Red TeleCorp Sentinel AI - Correlación, IA Multi-Cloud GCP, Priorización y Notificación",
+  "StartAt": "VerificarInfraestructuraYRecurrencia",
+  "States": {
+    "VerificarInfraestructuraYRecurrencia": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:us-east-1:${ACCOUNT_ID}:function:telecorp-eval-recurrence",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$.recurrence",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.recurrence_error",
+          "Next": "FallbackRecurrencia"
+        }
+      ],
+      "Next": "AnalizarConIAYGeoespacialGCP"
+    },
+
+    "FallbackRecurrencia": {
+      "Type": "Pass",
+      "Comment": "Garantiza estructura válida si eval_recurrence falla o no encuentra antena asociada",
+      "Result": {
+        "Payload": {
+          "antenna_id": "UNKNOWN",
+          "antenna_status": "NORMAL",
+          "antenna_traffic_gb": 90.0,
+          "structural_risk": false,
+          "distinct_failure_days_count": 0,
+          "recent_failure_days": []
+        }
+      },
+      "ResultPath": "$.recurrence",
+      "Next": "AnalizarConIAYGeoespacialGCP"
+    },
+
+    "AnalizarConIAYGeoespacialGCP": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:us-east-1:${ACCOUNT_ID}:function:telecorp-enrich-and-score",
+        "Payload": {
+          "incident_id.$": "$.incident_id",
+          "geohash.$": "$.geohash",
+          "lat.$": "$.lat",
+          "lon.$": "$.lon",
+          "trigger_type.$": "$.trigger_type",
+          "unique_users_count.$": "$.unique_users_count",
+          "descriptions.$": "$.descriptions",
+          "antenna_id.$": "$.recurrence.Payload.antenna_id",
+          "antenna_status.$": "$.recurrence.Payload.antenna_status",
+          "antenna_traffic_gb.$": "$.recurrence.Payload.antenna_traffic_gb",
+          "structural_risk.$": "$.recurrence.Payload.structural_risk",
+          "recent_failure_days.$": "$.recurrence.Payload.recent_failure_days",
+          "timestamp.$": "$.timestamp"
+        }
+      },
+      "ResultPath": "$.enrichment",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.enrichment_error",
+          "Next": "FallbackPriorizacionLocal"
+        }
+      ],
+      "Next": "EvaluarCriticidad"
+    },
+
+    "FallbackPriorizacionLocal": {
+      "Type": "Pass",
+      "Comment": "Respaldo si la Lambda enrich_and_score excede timeout; evita detener la respuesta operativa",
+      "Result": {
+        "Payload": {
+          "priority_score": 100.0,
+          "priority_level": "ALTA",
+          "early_anomaly_detected": true,
+          "critical_pois": [],
+          "structural_recurrence_alert": false,
+          "ai_diagnosis": "Incidencia zonal confirmada por volumen de reportes; análisis IA diferido por latencia.",
+          "ai_source": "SFN_CATCH_FALLBACK"
+        }
+      },
+      "ResultPath": "$.enrichment",
+      "Next": "EvaluarCriticidad"
+    },
+
+    "EvaluarCriticidad": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.enrichment.Payload.priority_level",
+          "StringEquals": "CRITICA",
+          "Next": "PrepararAtencionInmediata"
+        },
+        {
+          "Or": [
+            {
+              "Variable": "$.enrichment.Payload.priority_level",
+              "StringEquals": "ALTA"
+            },
+            {
+              "Variable": "$.enrichment.Payload.early_anomaly_detected",
+              "BooleanEquals": true
+            }
+          ],
+          "Next": "PrepararRevisionPrioritaria"
+        },
+        {
+          "Variable": "$.enrichment.Payload.priority_level",
+          "StringEquals": "BAJA",
+          "Next": "EsperarConfirmacionPersistencia"
+        }
+      ],
+      "Default": "PrepararRevisionPrioritaria"
+    },
+
+    "EsperarConfirmacionPersistencia": {
+      "Type": "Wait",
+      "Seconds": 15,
+      "Comment": "Ventana de estabilización para incidentes de baja criticidad antes de movilizar cuadrilla",
+      "Next": "PrepararRevisionPrioritaria"
+    },
+
+    "PrepararAtencionInmediata": {
+      "Type": "Pass",
+      "Result": {
+        "assigned_status": "Siendo atendida",
+        "dispatch_mode": "INMEDIATO_CRITICO"
+      },
+      "ResultPath": "$.workflow_meta",
+      "Next": "ConfirmarIncidenteZonal"
+    },
+
+    "PrepararRevisionPrioritaria": {
+      "Type": "Pass",
+      "Result": {
+        "assigned_status": "En revisión",
+        "dispatch_mode": "ESTANDAR_PRIORIZADO"
+      },
+      "ResultPath": "$.workflow_meta",
+      "Next": "ConfirmarIncidenteZonal"
+    },
+
+    "ConfirmarIncidenteZonal": {
+      "Type": "Task",
+      "Comment": "Actualiza estado oficial del Incidente Maestro en DynamoDB vía integración nativa AWS SDK",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "TeleCorp_Operaciones",
+        "Key": {
+          "PK": {
+            "S.$": "States.Format('INCIDENT#{}', $.incident_id)"
+          },
+          "SK": {
+            "S": "META"
+          }
+        },
+        "UpdateExpression": "SET #st = :st, dispatch_mode = :dm, confirmed_at = :ts, workflow_execution_id = :exec",
+        "ExpressionAttributeNames": {
+          "#st": "status"
+        },
+        "ExpressionAttributeValues": {
+          ":st": {
+            "S.$": "$.workflow_meta.assigned_status"
+          },
+          ":dm": {
+            "S.$": "$.workflow_meta.dispatch_mode"
+          },
+          ":ts": {
+            "S.$": "$$.State.EnteredTime"
+          },
+          ":exec": {
+            "S.$": "$$.Execution.Id"
+          }
+        }
+      },
+      "ResultPath": "$.ddb_confirm",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "DynamoDB.ProvisionedThroughputExceededException",
+            "DynamoDB.RequestLimitExceeded",
+            "DynamoDB.InternalServerError"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "NotificarUsuariosAfectados"
+    },
+
+    "NotificarUsuariosAfectados": {
+      "Type": "Task",
+      "Comment": "Invoca Lambda P2.5 (SES + registro SMS) para avisar a los usuarios afectados de la zona",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:us-east-1:${ACCOUNT_ID}:function:telecorp-notify-users",
+        "Payload": {
+          "incident_id.$": "$.incident_id",
+          "geohash.$": "$.geohash",
+          "milestone": "INCIDENCIA_IDENTIFICADA",
+          "incident_status.$": "$.workflow_meta.assigned_status",
+          "priority_level.$": "$.enrichment.Payload.priority_level",
+          "priority_score.$": "$.enrichment.Payload.priority_score",
+          "ai_diagnosis.$": "$.enrichment.Payload.ai_diagnosis",
+          "critical_pois.$": "$.enrichment.Payload.critical_pois",
+          "structural_recurrence_alert.$": "$.enrichment.Payload.structural_recurrence_alert",
+          "timestamp.$": "$$.State.EnteredTime"
+        }
+      },
+      "ResultPath": "$.notification",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.notification_error",
+          "Next": "FallbackNotificacionDegradada"
+        }
+      ],
+      "End": true
+    },
+
+    "FallbackNotificacionDegradada": {
+      "Type": "Pass",
+      "Comment": "Permite completar el flujo en verde si SES Sandbox rechaza un correo ficticio o si P2.5 aún está en despliegue",
+      "Result": {
+        "status": "NOTIFICATION_DEGRADED_OR_PENDING_P25"
+      },
+      "ResultPath": "$.notification",
+      "End": true
+    }
+  }
+}

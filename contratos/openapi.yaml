@@ -1,0 +1,484 @@
+openapi: 3.0.3
+info:
+  title: Red TeleCorp Sentinel AI - API Multi-Cloud
+  version: 1.0.0
+  description: |
+    Contrato REST unificado entre AWS API Gateway (Ingesta, Operaciones, Analítica)
+    y Google Cloud Run (Motor de IA Operativa Gemini + Inteligencia Geoespacial OSM).
+
+servers:
+  - url: https://{apiId}.execute-api.us-east-1.amazonaws.com/prod
+    description: AWS API Gateway (Nube Primaria - Operación y Datos)
+    variables:
+      apiId:
+        default: xxxxxxxxxx
+  - url: https://telecorp-ia-xxxxx-uc.a.run.app
+    description: Google Cloud Run (Nube Secundaria - IA y Geoespacial)
+
+tags:
+  - name: Tickets
+    description: Gestión de incidencias reportadas por usuarios
+  - name: Ingesta
+    description: Recepción asíncrona de telemetría de antenas y logs internos
+  - name: Analitica
+    description: Indicadores operativos e históricos de la red
+  - name: IA-MultiCloud
+    description: Microservicio de análisis semántico y criticidad geoespacial en GCP
+
+paths:
+  /tickets:
+    post:
+      tags: [Tickets]
+      summary: Registrar nueva incidencia de usuario
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketCreateRequest'
+      responses:
+        '202':
+          description: Incidencia aceptada y encolada en SQS
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketCreateResponse'
+        '400':
+          description: Datos de entrada inválidos
+
+    get:
+      tags: [Tickets]
+      summary: Consultar incidencias e historial por usuario, zona o ticket
+      parameters:
+        - name: ticket_id
+          in: query
+          schema:
+            type: string
+          example: TCK-98231
+        - name: user_id
+          in: query
+          schema:
+            type: string
+          example: DNI-70451289
+        - name: geohash
+          in: query
+          schema:
+            type: string
+          example: 6mc5p8
+      responses:
+        '200':
+          description: Lista de incidencias con historial de estados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TicketDetail'
+
+  /tickets/{ticket_id}/estado:
+    patch:
+      tags: [Tickets]
+      summary: Actualizar estado de una incidencia y registrar historial
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: TCK-98231
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_status]
+              properties:
+                new_status:
+                  $ref: '#/components/schemas/TicketStatus'
+                changed_by:
+                  type: string
+                  default: OPERADOR
+                note:
+                  type: string
+                  example: Servicio restablecido tras reemplazo de tarjeta RF
+      responses:
+        '200':
+          description: Estado actualizado y auditoría registrada
+        '400':
+          description: Estado fuera del catálogo permitido
+        '404':
+          description: Ticket no encontrado
+
+  /telemetria:
+    post:
+      tags: [Ingesta]
+      summary: Ingerir métrica periódica de tráfico de una antena (GB/min)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TelemetryRequest'
+      responses:
+        '202':
+          description: Telemetría encolada para evaluación de umbrales (0, <60, 60-129, >129)
+
+  /logs:
+    post:
+      tags: [Ingesta]
+      summary: Ingerir registro operativo de sistemas internos
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InternalLogRequest'
+      responses:
+        '202':
+          description: Log interno normalizado y encolado
+
+  /analytics/resumen:
+    get:
+      tags: [Analitica]
+      summary: Obtener KPIs históricos, zonas críticas, antenas recurrentes y incidentes maestros
+      responses:
+        '200':
+          description: Resumen analítico y operativo consolidado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsSummaryResponse'
+
+  /ia/analizar:
+    post:
+      tags: [IA-MultiCloud]
+      summary: Analizar semántica de reportes, fallas recurrentes y POIs críticos (Hospitales/Escuelas) en GCP
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AIAnalyzeRequest'
+      responses:
+        '200':
+          description: Resultado estructurado de Gemini + OpenStreetMap Overpass
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIAnalyzeResponse'
+        '401':
+          description: X-API-Key inválida o ausente
+
+  /health:
+    get:
+      tags: [IA-MultiCloud]
+      summary: Healthcheck del servicio en Google Cloud Run
+      responses:
+        '200':
+          description: Servicio operativo
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  schemas:
+    TicketStatus:
+      type: string
+      enum:
+        - Registrada
+        - En revisión
+        - Siendo atendida
+        - Solucionada
+        - Cerrada
+
+    AntennaHealthStatus:
+      type: string
+      enum:
+        - INHABILITADA
+        - CAIDA
+        - NORMAL
+        - SATURADA
+
+    PriorityLevel:
+      type: string
+      enum:
+        - CRITICA
+        - ALTA
+        - MEDIA
+        - BAJA
+
+    TicketCreateRequest:
+      type: object
+      required:
+        - user_id
+        - service_number
+        - location_text
+        - lat
+        - lon
+        - problem_type
+        - description
+      properties:
+        user_id:
+          type: string
+          example: DNI-70451289
+        service_number:
+          type: string
+          example: "999111222"
+        email:
+          type: string
+          format: email
+          example: usuario@dominio.com
+        phone:
+          type: string
+          example: "+51999111222"
+        location_text:
+          type: string
+          example: Av. Alfonso Ugarte 825, Cercado de Lima
+        lat:
+          type: number
+          format: float
+          example: -12.0464
+        lon:
+          type: number
+          format: float
+          example: -77.0428
+        problem_type:
+          type: string
+          example: SIN_INTERNET
+        description:
+          type: string
+          example: No tengo conexión de datos desde hace 20 minutos frente al hospital
+
+    TicketCreateResponse:
+      type: object
+      properties:
+        ticket_id:
+          type: string
+          example: TCK-98231
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+        geohash:
+          type: string
+          example: 6mc5p8
+
+    TicketDetail:
+      allOf:
+        - $ref: '#/components/schemas/TicketCreateRequest'
+        - type: object
+          properties:
+            ticket_id:
+              type: string
+            geohash:
+              type: string
+            status:
+              $ref: '#/components/schemas/TicketStatus'
+            ai_category:
+              type: string
+            master_incident_id:
+              type: string
+              nullable: true
+            priority_score:
+              type: number
+            priority_level:
+              $ref: '#/components/schemas/PriorityLevel'
+            created_at:
+              type: string
+              format: date-time
+            history:
+              type: array
+              items:
+                type: object
+                properties:
+                  old_status:
+                    type: string
+                  new_status:
+                    type: string
+                  changed_by:
+                    type: string
+                  note:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+
+    TelemetryRequest:
+      type: object
+      required: [antenna_id, lat, lon, traffic_gb_min]
+      properties:
+        antenna_id:
+          type: string
+          example: ANT-LIM-042
+        zone_name:
+          type: string
+          example: Cercado Centro - Hospital
+        lat:
+          type: number
+          format: float
+          example: -12.0464
+        lon:
+          type: number
+          format: float
+          example: -77.0428
+        traffic_gb_min:
+          type: number
+          format: float
+          example: 42.5
+        timestamp:
+          type: string
+          format: date-time
+
+    InternalLogRequest:
+      type: object
+      required: [system, level, message]
+      properties:
+        system:
+          type: string
+          example: CORE-RAN-CONTROLLER
+        antenna_id:
+          type: string
+          example: ANT-LIM-042
+        geohash:
+          type: string
+          example: 6mc5p8
+        level:
+          type: string
+          enum: [INFO, WARN, ERROR, CRITICAL]
+        message:
+          type: string
+          example: Packet loss spike > 45% on sector B
+        timestamp:
+          type: string
+          format: date-time
+
+    AnalyticsSummaryResponse:
+      type: object
+      properties:
+        kpis:
+          type: object
+          properties:
+            total_tickets:
+              type: integer
+            active_incidents:
+              type: integer
+            avg_mttr_minutes:
+              type: number
+            total_affected_users:
+              type: integer
+        top_zones:
+          type: array
+          items:
+            type: object
+            properties:
+              geohash:
+                type: string
+              zone_name:
+                type: string
+              incident_count:
+                type: integer
+        recurrent_antennas:
+          type: array
+          items:
+            type: object
+            properties:
+              antenna_id:
+                type: string
+              health_status:
+                $ref: '#/components/schemas/AntennaHealthStatus'
+              last_traffic_gb:
+                type: number
+              structural_risk:
+                type: boolean
+        top_problem_types:
+          type: array
+          items:
+            type: object
+            properties:
+              problem_type:
+                type: string
+              count:
+                type: integer
+        master_incidents:
+          type: array
+          items:
+            type: object
+
+    AIAnalyzeRequest:
+      type: object
+      required: [geohash, lat, lon, unique_users_count, descriptions]
+      properties:
+        geohash:
+          type: string
+          example: 6mc5p8
+        lat:
+          type: number
+          format: float
+          example: -12.0464
+        lon:
+          type: number
+          format: float
+          example: -77.0428
+        unique_users_count:
+          type: integer
+          example: 3
+        descriptions:
+          type: array
+          items:
+            type: string
+          example:
+            - Internet muerto cerca al hospital
+            - Sin datos móviles en Av Alfonso Ugarte
+        antenna_id:
+          type: string
+          example: ANT-LIM-042
+        antenna_traffic_gb:
+          type: number
+          format: float
+          example: 61.5
+        recent_failure_days:
+          type: array
+          items:
+            type: string
+          example: ["2026-11-10", "2026-11-12", "2026-11-14"]
+
+    AIAnalyzeResponse:
+      type: object
+      properties:
+        normalized_category:
+          type: string
+          example: CORTE_TOTAL_DATOS
+        semantic_cluster_confidence:
+          type: number
+          format: float
+          example: 0.94
+        early_anomaly_detected:
+          type: boolean
+          example: true
+        critical_pois:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+              distance_m:
+                type: integer
+        zone_criticality_multiplier:
+          type: number
+          format: float
+          example: 3.0
+        structural_recurrence_alert:
+          type: boolean
+          example: true
+        ai_executive_diagnosis:
+          type: string

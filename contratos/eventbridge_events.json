@@ -1,0 +1,74 @@
+{
+  "event_bus_name": "telecorp-bus",
+  "events": {
+    "incidencia_creada": {
+      "EventBusName": "telecorp-bus",
+      "Source": "telecorp.ingesta",
+      "DetailType": "incidencia.creada",
+      "Detail": {
+        "ticket_id": "TCK-98231",
+        "user_id": "DNI-70451289",
+        "service_number": "999111222",
+        "email": "usuario@dominio.com",
+        "phone": "+51999111222",
+        "geohash": "6mc5p8",
+        "lat": -12.0464,
+        "lon": -77.0428,
+        "problem_type": "SIN_INTERNET",
+        "description": "No carga nada desde hace 20 minutos frente al Hospital Loayza",
+        "timestamp": "2026-11-14T16:10:00Z"
+      }
+    },
+    "antena_anomalia": {
+      "EventBusName": "telecorp-bus",
+      "Source": "telecorp.telemetria",
+      "DetailType": "antena.anomalia",
+      "Detail": {
+        "antenna_id": "ANT-LIM-042",
+        "geohash": "6mc5p8",
+        "lat": -12.0464,
+        "lon": -77.0428,
+        "traffic_gb_min": 42.5,
+        "previous_traffic_gb": 105.0,
+        "health_status": "CAIDA",
+        "timestamp": "2026-11-14T16:10:05Z"
+      }
+    },
+    "colectivo_detectado": {
+      "EventBusName": "telecorp-bus",
+      "Source": "telecorp.orquestacion",
+      "DetailType": "colectivo.detectado",
+      "Detail": {
+        "incident_id": "INC-20261114-001",
+        "geohash": "6mc5p8",
+        "lat": -12.0464,
+        "lon": -77.0428,
+        "trigger_type": "COLECTIVO_10",
+        "unique_users_count": 10,
+        "sample_descriptions": [
+          "Sin señal frente al hospital",
+          "Internet caído en Av Alfonso Ugarte",
+          "No entran llamadas ni datos"
+        ],
+        "antenna_id": "ANT-LIM-042",
+        "antenna_status": "CAIDA",
+        "antenna_traffic_gb": 42.5,
+        "timestamp": "2026-11-14T16:12:00Z"
+      }
+    },
+    "incidente_solucionado": {
+      "EventBusName": "telecorp-bus",
+      "Source": "telecorp.operaciones",
+      "DetailType": "incidente.solucionado",
+      "Detail": {
+        "incident_id": "INC-20261114-001",
+        "ticket_id": "TCK-98231",
+        "geohash": "6mc5p8",
+        "new_status": "Solucionada",
+        "changed_by": "OPERADOR",
+        "note": "Cuadrilla restableció enlace de fibra en estación base ANT-LIM-042",
+        "timestamp": "2026-11-14T17:05:00Z"
+      }
+    }
+  }
+}
