@@ -132,6 +132,22 @@ def process_telemetry(data):
         }
     )
 
+
+
+    previous_status = previous_item.get("health_status")
+
+    if previous_status != status:
+        table.put_item(
+            Item={
+                "PK": f"ANTENNA#{antenna_id}",
+                "SK": f"EVENT#{timestamp[:10]}#{timestamp}",
+                "health_status": status,
+                "traffic_gb": traffic,
+                "geohash": geohash,
+                "updated_at": timestamp
+            }
+        )
+
     if status != "NORMAL" or drop:
         detail = {
             "antenna_id": antenna_id,
