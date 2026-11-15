@@ -1,9 +1,12 @@
 // Hooks de datos con TanStack Query. El polling se pausa solo cuando la pestaña está oculta
 // (refetchIntervalInBackground: false es el comportamiento por defecto).
-import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { QueryClient, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, updateIncidentStatus } from "./api";
 import { CONFIG } from "./config";
-import type { TicketCreateRequest, Incident, TicketQuery, TicketStatus } from "../types";
+import { buildHourlyTrend, trendZones } from "./trend";
+import { useNow } from "./hooks";
+import type { Incident, Ticket, TicketCreateRequest, TicketQuery, TicketStatus, TrendPoint } from "../types";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -59,4 +62,29 @@ export function useUpdateIncidentStatus() {
       void qc.invalidateQueries({ queryKey: ["tickets"] });
     },
   });
+}
+
+/** Tickets de las zonas con incidentes recientes (GET /tickets?geohash=), con la misma caché que el drawer. */
+export function useZoneTickets(incidents: Incident[] | undefined): { tickets: Ticket[]; loading: boolean } {
+  const zones = useMemo(() => trendZones(incidents ?? []), [incidents]);
+  return useQueries({
+    queries: zones.map((geohash) => ({
+      queryKey: keys.tickets({ geohash }),
+      queryFn: ({ signal }: { signal: AbortSignal }) => api.getTickets({ geohash }, signal),
+      ...live,
+    })),
+    combine: (results) => ({
+      tickets: results.flatMap((r) => r.data ?? []),
+      loading: results.some((r) => r.isLoading),
+    }),
+  });
+}
+
+/** Tendencia horaria (últimas 12 h) calculada en el cliente con incidentes + tickets. */
+export function useHourlyTrend(): { trend: TrendPoint[]; loading: boolean } {
+  const incidents = useIncidents();
+  const zone = useZoneTickets(incidents.data);
+  const now = useNow(60_000);
+  const trend = useMemo(() => (incidents.data ? buildHourlyTrend(incidents.data, zone.tickets, now) : []), [incidents.data, zone.tickets, now]);
+  return { trend, loading: incidents.isLoading || zone.loading };
 }

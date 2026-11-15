@@ -116,7 +116,7 @@ export const ReportWizard = forwardRef<HTMLHeadingElement>(function ReportWizard
         lon: Number(v.coords.lon.toFixed(6)),
         problem_type: v.problem_type,
         description: v.description,
-        // TODO(contrato): incident_time no está en TicketCreateRequest; se envía como propiedad adicional
+        // datetime-local (hora local del navegador) → ISO 8601 en UTC
         incident_time: new Date(v.incident_time).toISOString(),
       },
       { onSuccess: (res) => setDone({ res, email: v.email }) },

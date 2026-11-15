@@ -41,10 +41,7 @@ export interface TicketCreateRequest {
   lon: number;
   problem_type: ProblemType | string;
   description: string;
-  /**
-   * TODO(contrato): campo propuesto, NO está en TicketCreateRequest. El portal lo envía como
-   * propiedad adicional (OpenAPI 3.0 permite propiedades extra); el backend puede ignorarlo.
-   */
+  /** Fecha y hora del inconveniente (ISO 8601, opcional). */
   incident_time?: string;
 }
 
@@ -56,7 +53,9 @@ export interface TicketCreateResponse {
 }
 
 /** GET /tickets → 200 · items[] · TicketDetail (allOf TicketCreateRequest + detalle) */
-export interface TicketDetail extends TicketCreateRequest {
+export interface TicketDetail extends Omit<TicketCreateRequest, "incident_time"> {
+  /** Guardado y devuelto por el backend; null en tickets antiguos sin el dato. */
+  incident_time: string | null;
   ticket_id: string;
   geohash: string;
   status: TicketStatus | string;
@@ -91,10 +90,10 @@ export interface CriticalPoi {
 }
 
 // ============================================================================
-// TODO(contrato): GET /incidentes y GET /antenas aún NO existen en openapi.yaml.
-// Son endpoints propuestos; hoy solo funcionan en modo mock. Ver lib/api/index.ts.
+// GET /incidentes y GET /antenas → 200 { items: [...] } (esquemas Incidente y Antena).
 // ============================================================================
 
+/** Esquema Incidente. */
 export interface Incident {
   incident_id: string;
   geohash: string;
@@ -105,17 +104,21 @@ export interface Incident {
   priority_score: number;
   priority_level: PriorityLevel;
   status: TicketStatus | string;
+  /** null mientras la IA no termina el análisis. */
   ai_diagnosis: string | null;
   created_at: string;
   closed_at: string | null;
-  // Campos opcionales que el front aprovecha si existen
+  // Fuera del esquema Incidente: se aprovechan solo si el backend los envía.
   ai_confidence?: number | null;
-  ticket_ids?: string[];
   antenna_id?: string | null;
-  lat?: number;
-  lon?: number;
 }
 
+/** GET /incidentes → 200 */
+export interface IncidentListResponse {
+  items: Incident[];
+}
+
+/** Esquema Antena. */
 export interface Antenna {
   antenna_id: string;
   zone_name: string;
@@ -126,6 +129,11 @@ export interface Antenna {
   health_status: HealthStatus;
   updated_at: string;
   structural_risk: boolean;
+}
+
+/** GET /antenas → 200 */
+export interface AntennaListResponse {
+  items: Antenna[];
 }
 
 /** GET /analytics/resumen · AnalyticsSummaryResponse.kpis */
@@ -147,13 +155,17 @@ export interface RecurrentAntenna {
   geohash?: string;
 }
 
-/** TODO(contrato): serie horaria propuesta; no está en AnalyticsSummaryResponse (solo la entrega el mock). */
+/** Punto horario construido en el cliente (lib/trend.ts) a partir de created_at/closed_at. */
 export interface TrendPoint {
+  /** Inicio de la hora (ISO 8601). */
   ts: string;
+  /** Tickets creados en esa hora. */
   reports: number;
+  /** Incidentes abiertos al cierre de la hora. */
   active_incidents: number;
-  critical_antennas: number;
+  /** Usuarios afectados por esos incidentes. */
   affected_users: number;
+  /** MTTR acumulado de los incidentes cerrados hasta esa hora. */
   mttr_minutes: number | null;
 }
 
@@ -163,10 +175,8 @@ export interface AnalyticsSummaryResponse {
   top_zones: { geohash: string; zone_name: string; incident_count: number }[];
   recurrent_antennas: RecurrentAntenna[];
   top_problem_types: { problem_type: string; count: number }[];
-  /** El contrato lo define como `object` sin esquema; se normaliza con la forma propuesta de Incident. */
+  /** El contrato lo define como `object`; se normaliza con el esquema Incidente. */
   master_incidents: Incident[];
-  /** TODO(contrato): extensión propuesta (ver TrendPoint). Vacía si el API no la envía. */
-  trend: TrendPoint[];
 }
 export type AnalyticsSummary = AnalyticsSummaryResponse;
 

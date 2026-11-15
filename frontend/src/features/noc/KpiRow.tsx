@@ -7,7 +7,8 @@ import { cn, formatMinutes, formatNumber } from "../../lib/format";
 import type { AnalyticsSummary, Antenna, Incident, TrendPoint } from "../../types";
 import { isClosedStatus } from "../../types";
 
-type Field = Exclude<keyof TrendPoint, "ts">;
+/** Claves con serie horaria; "critical_antennas" no tiene histórico y usa la serie de la sesión. */
+type Field = Exclude<keyof TrendPoint, "ts" | "reports"> | "critical_antennas";
 
 interface KpiDef {
   key: Field;
@@ -23,16 +24,18 @@ interface Props {
   incidents: Incident[] | undefined;
   antennas: Antenna[] | undefined;
   analytics: AnalyticsSummary | undefined;
+  /** Serie horaria construida en el cliente (lib/trend.ts). */
+  trend: TrendPoint[];
   loading: boolean;
   updatedAt: number;
 }
 
-export function KpiRow({ incidents, antennas, analytics, loading, updatedAt }: Props) {
+export function KpiRow({ incidents, antennas, analytics, trend, loading, updatedAt }: Props) {
   const active = incidents?.filter((i) => !isClosedStatus(i.status)) ?? [];
   const critical = active.filter((i) => i.priority_level === "CRITICA").length;
   const count = (s: Antenna["health_status"]) => antennas?.filter((a) => a.health_status === s).length ?? 0;
   const critAnts = antennas ? count("CAIDA") + count("INHABILITADA") + count("SATURADA") : null;
-  const affected = analytics?.kpis.total_affected_users ?? (incidents ? active.reduce((s, i) => s + i.affected_users_count, 0) : null);
+  const affected = incidents ? active.reduce((s, i) => s + i.affected_users_count, 0) : null;
 
   const kpis: KpiDef[] = [
     { key: "active_incidents", label: "Incidentes activos", icon: Siren, value: incidents ? active.length : null, sub: `${critical} de prioridad crítica`, accent: "rgb(var(--prio-critica))" },
@@ -44,11 +47,11 @@ export function KpiRow({ incidents, antennas, analytics, loading, updatedAt }: P
       sub: `${count("CAIDA")} caídas · ${count("INHABILITADA")} inhab. · ${count("SATURADA")} saturadas`,
       accent: "rgb(var(--health-caida))",
     },
-    { key: "affected_users", label: "Usuarios afectados", icon: Users, value: affected, sub: analytics ? "Usuarios únicos con reportes" : "En incidentes activos", accent: "rgb(var(--prio-alta))" },
+    { key: "affected_users", label: "Usuarios afectados", icon: Users, value: affected, sub: "En incidentes activos", accent: "rgb(var(--prio-alta))" },
     { key: "mttr_minutes", label: "MTTR promedio", icon: Timer, value: analytics?.kpis.avg_mttr_minutes ?? null, sub: "Tiempo medio de restablecimiento", format: formatMinutes, accent: "rgb(var(--accent))" },
   ];
 
-  // Serie de la sesión: respaldo si el API no entrega "trend"
+  // Serie de la sesión: para KPIs sin histórico horario (antenas críticas)
   const [session, setSession] = useState<Record<string, number[]>>({});
   const signature = kpis.map((k) => k.value ?? "x").join("|");
   useEffect(() => {
@@ -61,15 +64,16 @@ export function KpiRow({ incidents, antennas, analytics, loading, updatedAt }: P
     // eslint-disable-next-line react-hooks/exhaustive-deps -- se registra una muestra por refresco
   }, [updatedAt, signature]);
 
-  const trend = analytics?.trend ?? [];
   const fromTrend = trend.length >= 2;
 
   return (
     <div className="grid grid-cols-2 gap-4 xl:grid-cols-4" role="list" aria-label="Indicadores clave">
       {kpis.map((k) => {
-        const series = fromTrend ? trend.map((p) => p[k.key] ?? 0) : (session[k.key] ?? []);
-        if (fromTrend && k.value !== null) series[series.length - 1] = k.value; // el último punto es el valor en vivo
-        return <KpiCard key={k.key} def={k} series={series} loading={loading && k.value === null} compareLabel={fromTrend ? "vs. hora anterior" : "vs. lectura anterior"} />;
+        const key = k.key;
+        const hourly = fromTrend && key !== "critical_antennas";
+        const series = hourly ? trend.map((p) => p[key] ?? 0) : (session[key] ?? []);
+        if (hourly && k.value !== null) series[series.length - 1] = k.value; // el último punto es el valor en vivo
+        return <KpiCard key={key} def={k} series={series} loading={loading && k.value === null} compareLabel={hourly ? "vs. hora anterior" : "vs. lectura anterior"} />;
       })}
     </div>
   );

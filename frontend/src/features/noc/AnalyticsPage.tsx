@@ -2,12 +2,14 @@ import { Activity, MapPinned, PieChart as PieIcon, ShieldAlert, Timer } from "lu
 import { ProblemTypesChart, TopZonesChart, TrendChart } from "./charts";
 import { Card, CardHeader, EmptyState, ErrorState, Skeleton } from "../../components/ui";
 import { HealthBadge } from "../../components/domain";
-import { useAnalytics, useAntennas } from "../../lib/queries";
+import { useAnalytics, useAntennas, useHourlyTrend } from "../../lib/queries";
 import { formatMinutes, formatNumber } from "../../lib/format";
 
 export function AnalyticsPage() {
   const analytics = useAnalytics();
   const antennas = useAntennas();
+  const { trend, loading: trendLoading } = useHourlyTrend();
+  const hasTrend = trend.some((p) => p.reports > 0 || p.active_incidents > 0);
   const d = analytics.data;
   const retry = () => void analytics.refetch();
 
@@ -38,8 +40,10 @@ export function AnalyticsPage() {
       </div>
 
       <Card aria-labelledby="an-trend">
-        <CardHeader id="an-trend" icon={<Activity />} title="Tendencia de reportes" subtitle="Reportes ciudadanos por hora · últimas 12 h (hora de Lima)" />
-        <div className="p-4">{body((x) => <TrendChart data={x.trend} />, (x) => x.trend.length < 2, "h-56")}</div>
+        <CardHeader id="an-trend" icon={<Activity />} title="Tendencia de reportes" subtitle="Tickets por hora según created_at · últimas 12 h (hora de Lima)" />
+        <div className="p-4">
+          {trendLoading ? <Skeleton className="h-56 w-full" /> : hasTrend ? <div className="h-56"><TrendChart data={trend} /></div> : <EmptyState compact title="Sin reportes en las últimas 12 h" />}
+        </div>
       </Card>
 
       <div className="grid gap-4 xl:grid-cols-2">
@@ -97,7 +101,7 @@ export function AnalyticsPage() {
           </div>
         </Card>
         <Card aria-labelledby="an-mttr">
-          <CardHeader id="an-mttr" icon={<Timer />} title="Tiempo de restablecimiento" subtitle="MTTR por hora (min)" />
+          <CardHeader id="an-mttr" icon={<Timer />} title="Tiempo de restablecimiento" subtitle="MTTR acumulado por hora (min)" />
           <div className="p-4">
             {analytics.isLoading ? (
               <Skeleton className="h-32" />
@@ -105,10 +109,10 @@ export function AnalyticsPage() {
               <div>
                 <p className="num text-3xl font-semibold">{formatMinutes(d.kpis.avg_mttr_minutes)}</p>
                 <p className="mt-1 text-sm text-fg-muted">Promedio de incidentes cerrados</p>
-                {d.trend.length >= 2 && (
+                {trend.some((p) => p.mttr_minutes !== null) && (
                 <ul className="mt-4 grid grid-cols-6 items-end gap-1" aria-label="MTTR por hora">
-                  {d.trend.slice(-6).map((p) => {
-                    const max = Math.max(...d.trend.slice(-6).map((x) => x.mttr_minutes ?? 0), 1);
+                  {trend.slice(-6).map((p) => {
+                    const max = Math.max(...trend.slice(-6).map((x) => x.mttr_minutes ?? 0), 1);
                     return (
                       <li key={p.ts} className="flex flex-col items-center gap-1" title={`${formatMinutes(p.mttr_minutes)}`}>
                         <span className="num text-2xs text-fg-subtle">{p.mttr_minutes ?? "—"}</span>

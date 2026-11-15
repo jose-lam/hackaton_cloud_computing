@@ -2,24 +2,21 @@ import { Link } from "react-router-dom";
 import { ArrowRight, ShieldAlert } from "lucide-react";
 import { Card, CardHeader, EmptyState, ErrorState, Skeleton } from "../../components/ui";
 import { HealthBadge } from "../../components/domain";
-import type { AnalyticsSummary, Antenna } from "../../types";
+import type { Antenna } from "../../types";
 
 interface Props {
   antennas: Antenna[] | undefined;
-  analytics: AnalyticsSummary | undefined;
   loading: boolean;
   error: Error | null;
   onRetry: () => void;
 }
 
-/** Antenas con riesgo estructural (flag de la antena o falla recurrente en analítica). */
-export function RiskPanel({ antennas, analytics, loading, error, onRetry }: Props) {
-  const byId = new Map((antennas ?? []).map((a) => [a.antenna_id, a]));
-  const items = new Map<string, { health: Antenna["health_status"]; zone?: string; traffic: number }>();
-  for (const a of antennas ?? []) if (a.structural_risk) items.set(a.antenna_id, { health: a.health_status, zone: a.zone_name, traffic: a.last_traffic_gb });
-  for (const r of analytics?.recurrent_antennas ?? [])
-    items.set(r.antenna_id, { health: r.health_status, zone: r.zone_name ?? byId.get(r.antenna_id)?.zone_name, traffic: r.last_traffic_gb });
-  const list = [...items.entries()].sort((a, b) => a[1].traffic - b[1].traffic);
+/** Antenas con structural_risk = true (GET /antenas). */
+export function RiskPanel({ antennas, loading, error, onRetry }: Props) {
+  const list = (antennas ?? [])
+    .filter((a) => a.structural_risk)
+    .map((a) => [a.antenna_id, { health: a.health_status, zone: a.zone_name, traffic: a.last_traffic_gb }] as const)
+    .sort((a, b) => a[1].traffic - b[1].traffic);
 
   return (
     <Card aria-labelledby="risk-title">

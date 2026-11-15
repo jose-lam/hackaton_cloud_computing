@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, CircleCheckBig, MapPin, RadioTower } from "lucide-react";
+import { Check, CircleCheckBig, Clock3, MapPin, RadioTower } from "lucide-react";
 import { Card } from "../../components/ui";
 import { StatusBadge } from "../../components/domain";
 import { cn, formatDateTime } from "../../lib/format";
@@ -38,6 +38,14 @@ export function TicketTracker({ ticket: t }: { ticket: Ticket }) {
         <StatusBadge status={t.status} size="md" />
         <span className="num w-full text-sm text-fg-subtle sm:ml-auto sm:w-auto">Reportado {formatDateTime(t.created_at)}</span>
       </header>
+      {t.incident_time && (
+        <p className="flex items-center gap-2 px-5 pt-2 text-sm text-fg-muted sm:px-6">
+          <Clock3 className="h-4 w-4 shrink-0 text-fg-subtle" aria-hidden />
+          <span>
+            Problema desde <span className="num font-medium text-fg">{formatDateTime(t.incident_time)}</span>
+          </span>
+        </p>
+      )}
       <div className="px-5 pt-2 sm:px-6">
         <p className="flex items-start gap-2 text-base text-fg-muted">
           <ProblemIcon className="mt-0.5 h-4 w-4 shrink-0 text-fg-subtle" aria-hidden />

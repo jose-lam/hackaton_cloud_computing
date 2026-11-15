@@ -3,6 +3,8 @@ import { BellRing, CircleCheck, Clock, Hash, History, MapPin, RadioTower, Sparkl
 import { Badge, Button, Drawer, DrawerCloseButton, EmptyState, ErrorState, Skeleton, SkeletonText, TabPanel, Tabs, useToast } from "../../components/ui";
 import { HealthBadge, PoiBadge, PriorityBadge, StatusBadge, TriggerLabel } from "../../components/domain";
 import { useTickets, useUpdateIncidentStatus } from "../../lib/queries";
+import { linkedTickets } from "../../lib/api";
+import { antennaForIncident, earliestIncidentTime } from "../../lib/incident";
 import { useNow } from "../../lib/hooks";
 import { cn, formatDateTime, formatDistance, formatRelative } from "../../lib/format";
 import { poiMeta, priorityMeta, problemLabel, statusMeta, TRIGGER_META } from "../../lib/labels";
@@ -51,7 +53,7 @@ function DrawerBody({ incident, antennas, titleId, onClose }: { incident: Incide
   const [tab, setTab] = useState("resumen");
   const tabsId = useId();
   const now = useNow(30_000);
-  const antenna = antennas?.find((a) => a.antenna_id === incident.antenna_id);
+  const antenna = antennaForIncident(incident, antennas);
   const prio = priorityMeta(incident.priority_level);
 
   return (
@@ -148,6 +150,9 @@ function Stat({ label, children, className }: { label: string; children: React.R
 function SummaryTab({ incident, antenna, now, onGoTo }: { incident: Incident; antenna: Antenna | undefined; now: number; onGoTo: (t: string) => void }) {
   const prio = priorityMeta(incident.priority_level);
   const firstParagraph = incident.ai_diagnosis?.split(/\n\s*\n/)[0];
+  const ticketsQ = useTickets(incident.geohash ? { geohash: incident.geohash } : null);
+  const linked = useMemo(() => linkedTickets(ticketsQ.data ?? [], incident.incident_id), [ticketsQ.data, incident.incident_id]);
+  const reportedStart = earliestIncidentTime(linked);
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3">
@@ -157,7 +162,6 @@ function SummaryTab({ incident, antenna, now, onGoTo }: { incident: Incident; an
         <Stat label="Puntaje de prioridad">
           <p className="num text-2xl font-semibold">
             {incident.priority_score}
-            <span className="text-sm text-fg-subtle">/100</span>
           </p>
           <span className="mt-1 block h-1 overflow-hidden rounded-full bg-surface-3" aria-hidden>
             <span className="block h-full rounded-full" style={{ width: `${Math.min(100, incident.priority_score)}%`, background: prio.color }} />
@@ -227,7 +231,21 @@ function SummaryTab({ incident, antenna, now, onGoTo }: { incident: Incident; an
         <dt className="flex items-center gap-1.5 text-fg-subtle">
           <MapPin className="h-3.5 w-3.5" aria-hidden /> Tickets vinculados
         </dt>
-        <dd className="num text-fg">{incident.ticket_ids?.length ?? "—"}</dd>
+        <dd className="num text-fg">{ticketsQ.isLoading ? "…" : linked.length}</dd>
+        <dt className="flex items-center gap-1.5 text-fg-subtle">
+          <Clock className="h-3.5 w-3.5" aria-hidden /> Inicio reportado
+        </dt>
+        <dd className="text-fg">
+          {reportedStart ? (
+            <>
+              <span className="num">{formatDateTime(reportedStart)}</span> <span className="text-xs text-fg-subtle">· primer reporte de los usuarios</span>
+            </>
+          ) : ticketsQ.isLoading ? (
+            "…"
+          ) : (
+            <span className="text-fg-muted">Sin dato en los tickets</span>
+          )}
+        </dd>
       </dl>
     </div>
   );
@@ -259,6 +277,7 @@ function DiagnosisCard({ incident }: { incident: Incident }) {
       </header>
 
       <div className="space-y-4 p-4">
+        {(pending || (conf !== null && conf !== undefined)) && (
         <div>
           <div className="flex items-baseline justify-between">
             <span className="text-xs font-semibold uppercase tracking-[0.1em] text-fg-subtle">Confianza del modelo</span>
@@ -285,6 +304,7 @@ function DiagnosisCard({ incident }: { incident: Incident }) {
             })}
           </div>
         </div>
+        )}
 
         {pending ? (
           <div role="status" className="space-y-3">
@@ -340,7 +360,7 @@ function PoisTab({ incident }: { incident: Incident }) {
 
 function HistoryTab({ incident }: { incident: Incident }) {
   const q = useTickets(incident.geohash ? { geohash: incident.geohash } : null);
-  const tickets = useMemo(() => (q.data ?? []).filter((t) => !t.master_incident_id || t.master_incident_id === incident.incident_id), [q.data, incident.incident_id]);
+  const tickets = useMemo(() => linkedTickets(q.data ?? [], incident.incident_id), [q.data, incident.incident_id]);
   const events = useMemo(() => {
     const groups = new Map<string, { old_status: string | null; new_status: string; changed_by: string; note: string; timestamp: string | null; n: number }>();
     for (const t of tickets)
