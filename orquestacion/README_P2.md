@@ -1,19 +1,21 @@
 # Módulo de Orquestación y Reglas de Negocio (`orquestacion/` — P2)
 
-Implementa el enrutamiento de eventos en **Amazon EventBridge**, la detección colectiva deduplicada en ventanas menores a $24\text{h}$, el análisis de recurrencia estructural, la priorización multi-cloud con **GCP Cloud Run** y la orquestación de respuesta mediante **AWS Step Functions**.
+Implementa el enrutamiento de eventos en **Amazon EventBridge**, la detección colectiva deduplicada en ventanas menores a $24\text{h}$, el análisis de recurrencia estructural, la priorización multi-cloud con **GCP Cloud Run**, la orquestación de respuesta mediante **AWS Step Functions** y el sistema de notificaciones omnicanal sobre **Amazon SNS**.
 
 ## 1. Arquitectura del Módulo P2
 
 ```mermaid
 flowchart LR
-    IN["Eventos de Entrada\n(incidencia.creada / antena.anomalia)"] --> EB["EventBridge\n(telecorp-bus)"]
+    IN["Eventos de Entrada\n(incidencia.creada / antena.anomalia /\nincidente.solucionado)"] --> EB["EventBridge\n(telecorp-bus)"]
     EB --> RULE_C["Regla: telecorp-collective-rule"]
     EB --> RULE_R["Regla: telecorp-recurrence-rule"]
+    EB --> RULE_S["Regla: telecorp-incident-resolved-rule"]
 
     RULE_C --> L_COL["Lambda: eval_collective.py\n[P2.1 - ACTIVO]"]
     RULE_R --> L_REC["Lambda: eval_recurrence.py\n[P2.2 - ACTIVO]"]
+    RULE_S --> L_NOT["Lambda: notify_users.py\n[P2.5 - ACTIVO]"]
 
-    SSM["SSM Parameter Store\n(/telecorp/thresholds/* & /gcp/*)"] -.-> L_COL & L_REC & S2
+    SSM["SSM Parameter Store\n(/telecorp/thresholds/*, /gcp/* & /sns/*)"] -.-> L_COL & L_REC & S2 & S5 & L_NOT
     L_COL <--> DDB_V[("DynamoDB\nTeleCorp_VentanasZonales")]
     L_COL <--> DDB_O[("DynamoDB\nTeleCorp_Operaciones")]
     L_REC <--> DDB_O
@@ -25,41 +27,45 @@ flowchart LR
         S1["1. P2.2: eval_recurrence.py\n[ACTIVO]"] --> S2["2. P2.3: enrich_and_score.py\n[ACTIVO]"]
         S2 --> S3{"3. Choice: EvaluarCriticidad\n(CRITICA / ALTA / BAJA)"}
         S3 --> S4["4. SDK DynamoDB: ConfirmarIncidenteZonal\n[ACTIVO]"]
-        S4 --> S5["5. P2.5: notify_users.py\n[Siguiente]"]
+        S4 --> S5["5. P2.5: notify_users.py\n[ACTIVO]"]
     end
 
     SFN -.-> FLUJO_SFN
     S2 <-->|"HTTPS POST + X-API-Key"| GCP["GCP Cloud Run\n(/ia/analizar: Gemini + OSM)"]
-    S2 & S4 <--> DDB_O
+    S2 & S4 & L_NOT <--> DDB_O
+    S5 & L_NOT --> SNS["Amazon SNS\n(telecorp-alertas-zonales)"]
+    S5 & L_NOT --> DDB_V
 ```
 
 ## 2. Estructura de Carpeta (`orquestacion/`)
 
 ```text
 orquestacion/
-├── README.md                    # Documentación específica del módulo P2
-├── eventbridge_rules.json       # Patrones de enrutamiento de telecorp-bus (ACTIVO - P2.1 / P2.2)
+├── README.md                    # Documentación específica del módulo P2 (100% Completado)
+├── eventbridge_rules.json       # Patrones de enrutamiento de telecorp-bus (ACTIVO - P2.1 / P2.2 / P2.5)
 ├── state_machine.asl.json       # Definición ASL de AWS Step Functions (ACTIVO - P2.4)
 └── lambdas/
     ├── eval_collective.py       # Motor de detección colectiva < 24h (ACTIVO - P2.1)
     ├── eval_recurrence.py       # Detección de fallas estructurales multi-día (ACTIVO - P2.2)
     ├── enrich_and_score.py      # Puente Multi-Cloud GCP /ia/analizar y score (ACTIVO - P2.3)
-    └── notify_users.py          # Envío de alertas SES/SNS por hito (Siguiente P2.5)
+    └── notify_users.py          # Envío de alertas omnicanal vía Amazon SNS por hito (ACTIVO - P2.5)
 ```
 
-## 3. Dependencias Mínimas para P2.1, P2.2, P2.3 y P2.4
+## 3. Dependencias Mínimas para P2.1 – P2.5
 
 Antes de desplegar los recursos del módulo P2, deben existir en `us-east-1` (creados en Fase 0 / P1.1):
 
-* **Rol IAM:** `LabRole` con permisos para Lambda, DynamoDB, SSM Parameter Store y AWS Step Functions.
+* **Rol IAM:** `LabRole` con permisos para Lambda, DynamoDB, SSM Parameter Store, Amazon SNS y AWS Step Functions.
 * **Bus EventBridge:** `telecorp-bus`
 * **Tablas DynamoDB:** `TeleCorp_VentanasZonales` (TTL: `expires_at`) y `TeleCorp_Operaciones` (GSI: `GSI1_ZonaEstado`)
+* **Tópico Amazon SNS:** `telecorp-alertas-zonales` con suscripciones `email` confirmadas para los integrantes del equipo (envía desde `no-reply@sns.amazonaws.com`).
 * **Parámetros SSM (`SecureString`):**
   * `/telecorp/thresholds/collective_users` $\rightarrow$ `"10"`
   * `/telecorp/thresholds/window_hours` $\rightarrow$ `"24"`
   * `/telecorp/thresholds/recurrence_days` $\rightarrow$ `"3"`
   * `/telecorp/gcp/endpoint_url` $\rightarrow$ URL de Google Cloud Run (o `"PENDIENTE_URL_CLOUD_RUN"` para operar en modo `FALLBACK_LOCAL`)
   * `/telecorp/gcp/api_key` $\rightarrow$ `"TELECORP-SECRET-KEY-2026"`
+  * `/telecorp/sns/topic_arn` $\rightarrow$ ARN del tópico `telecorp-alertas-zonales` (reemplaza `/telecorp/ses/sender_email`)
 
 ## 4. Etapa Implementada: Detección Colectiva (`Tarea P2.1`)
 
@@ -322,7 +328,7 @@ aws dynamodb get-item \
    * **`ALTA`, `MEDIA` o Detección Temprana IA (`early_anomaly_detected == true`):** Enruta inmediatamente a `PrepararRevisionPrioritaria` asignando `status = "En revisión"` y `dispatch_mode = "ESTANDAR_PRIORIZADO"`.
    * **`BAJA` ($< 40\text{ pts}$):** Pasa por una ventana breve de confirmación (`EsperarConfirmacionPersistencia` de $15\text{s}$) antes de escalar a revisión.
 4. **Confirmación Nativa en DynamoDB (`ConfirmarIncidenteZonal`):** Utiliza integración directa AWS SDK (`arn:aws:states:::dynamodb:updateItem`) para actualizar `status`, `dispatch_mode`, `confirmed_at` y `workflow_execution_id` en `PK=INCIDENT#<incident_id>`, `SK=META` sin incurrir en costos de una función Lambda intermedia.
-5. **Disparo de Notificaciones Omnicanal (`NotificarUsuariosAfectados`):** Invoca `telecorp-notify-users` (P2.5) enviando el hito `INCIDENCIA_IDENTIFICADA` junto con el diagnóstico IA y puntos críticos cercanos, contando con `FallbackNotificacionDegradada` para garantizar que la máquina finalice en `SUCCEEDED` incluso si SES Sandbox rechaza correos ficticios de prueba.
+5. **Disparo de Notificaciones Omnicanal (`NotificarUsuariosAfectados`):** Invoca `telecorp-notify-users` (P2.5) enviando el hito `INCIDENCIA_IDENTIFICADA` (o `EN_EVALUACION`) junto con el diagnóstico IA y puntos críticos cercanos para su difusión vía **Amazon SNS** (`no-reply@sns.amazonaws.com`), contando con `FallbackNotificacionDegradada` para garantizar que la máquina finalice siempre en `SUCCEEDED`.
 
 ### Despliegue AWS CLI
 
@@ -388,7 +394,132 @@ aws dynamodb get-item \
   --key '{"PK":{"S":"INCIDENT#INC-TEST-P24-01"},"SK":{"S":"META"}}'
 ```
 
-## 8. Progreso del Módulo P2
+## 8. Etapa Implementada: Sistema de Notificaciones Omnicanal (`Tarea P2.5`)
+
+### Reglas de Negocio (`lambdas/notify_users.py`)
+
+1. **Cobertura de los 3 Hitos Operativos:** Adapta dinámicamente el asunto ($\le 95$ caracteres), el cuerpo de correo y el mensaje SMS ($\le 160$ caracteres) según el estado del incidente:
+   * **`EN_EVALUACION`** (`status == "En revisión"`): Informa al usuario que su reporte está siendo correlacionado con la telemetría de red.
+   * **`INCIDENCIA_IDENTIFICADA`** (`status == "Siendo atendida"`): Confirma afectación colectiva/zonal, nivel de prioridad, puntos críticos cercanos y diagnóstico IA.
+   * **`SERVICIO_RESTABLECIDO`** (`status == "Solucionada"` o evento `incidente.solucionado` vía EventBridge): Confirma la normalización del servicio y la acción técnica ejecutada.
+2. **Difusión Consolidada por Amazon SNS + SSM:** Lee `/telecorp/sns/topic_arn` (`SecureString`) desde SSM Parameter Store con caché en memoria de $60\text{s}$ y realiza **1 publicación consolidada por incidente/hito** hacia `telecorp-alertas-zonales` (remitente `no-reply@sns.amazonaws.com` con `MessageAttributes` de `geohash`, `milestone` y `priority_level`), evitando spam de correos idénticos durante tormentas de reportes.
+3. **Canal SMS Resiliente para AWS Academy:** Genera la notificación breve para cada teléfono único afectado; por defecto (`ENABLE_DIRECT_SMS=false`) opera en modo seguro `SIMULATED_SMS_ACADEMY` para evitar bloqueos del Sandbox SMS en Learner Lab, soportando activación directa (`ENABLE_DIRECT_SMS=true`) con fallback automático.
+4. **Cierre en Cascada al Restablecer Servicio:** Al recibir `SERVICIO_RESTABLECIDO`, actualiza de forma idempotente en `TeleCorp_Operaciones` el `IncidenteMaestro` (`status = "Solucionada"`, `GSI1PK = "ACTIVE#false"`, `closed_at`) y todos sus tickets hermanos abiertos con registro `HIST#`.
+5. **Auditoría Individual Omnicanal:** Persiste en `TeleCorp_VentanasZonales` un registro por cada usuario y canal afectado (`PK=TICKET#<id>`, `SK=NOTIF#<iso_ts>#EMAIL` y `SK=NOTIF#<iso_ts>#SMS`, con `GSI1PK=INCIDENT#<incident_id>`).
+
+### Despliegue AWS CLI
+
+```bash
+export AWS_DEFAULT_REGION=us-east-1
+export LAB_ROLE_ARN=$(aws iam get-role --role-name LabRole --query 'Role.Arn' --output text)
+
+# 1. Crear tópico SNS y suscribir correos reales del equipo (confirmar enlace en bandeja)
+export SNS_TOPIC_ARN=$(aws sns create-topic --name telecorp-alertas-zonales --query 'TopicArn' --output text)
+
+aws sns subscribe --topic-arn "$SNS_TOPIC_ARN" --protocol email --notification-endpoint "correo_p1@dominio.com"
+aws sns subscribe --topic-arn "$SNS_TOPIC_ARN" --protocol email --notification-endpoint "correo_p2@dominio.com"
+aws sns subscribe --topic-arn "$SNS_TOPIC_ARN" --protocol email --notification-endpoint "correo_p3@dominio.com"
+
+aws ssm put-parameter \
+  --name "/telecorp/sns/topic_arn" \
+  --value "$SNS_TOPIC_ARN" \
+  --type "SecureString" \
+  --overwrite
+
+# 2. Empaquetar y desplegar Lambda notify_users
+cd orquestacion/lambdas
+zip notify_users.zip notify_users.py
+
+aws lambda create-function \
+  --function-name telecorp-notify-users \
+  --runtime python3.11 \
+  --role "$LAB_ROLE_ARN" \
+  --handler notify_users.lambda_handler \
+  --zip-file fileb://notify_users.zip \
+  --timeout 15 \
+  --memory-size 256 \
+  --environment "Variables={TABLA_OPERACIONES=TeleCorp_Operaciones,TABLA_VENTANAS=TeleCorp_VentanasZonales,SSM_SNS_TOPIC_PARAM=/telecorp/sns/topic_arn,ENABLE_DIRECT_SMS=false}"
+
+# 3. Suscribir regla de EventBridge para incidente.solucionado (SERVICIO_RESTABLECIDO)
+export NOTIFY_LAMBDA_ARN=$(aws lambda get-function --function-name telecorp-notify-users --query 'Configuration.FunctionArn' --output text)
+
+aws events put-rule \
+  --name telecorp-incident-resolved-rule \
+  --event-bus-name telecorp-bus \
+  --state ENABLED \
+  --event-pattern '{
+    "source": ["telecorp.operaciones"],
+    "detail-type": ["incidente.solucionado"]
+  }'
+
+aws lambda add-permission \
+  --function-name telecorp-notify-users \
+  --statement-id AllowEventBridgeResolvedRule \
+  --action lambda:InvokeFunction \
+  --principal events.amazonaws.com \
+  --source-arn $(aws events describe-rule --name telecorp-incident-resolved-rule --event-bus-name telecorp-bus --query 'Arn' --output text)
+
+aws events put-targets \
+  --rule telecorp-incident-resolved-rule \
+  --event-bus-name telecorp-bus \
+  --targets "Id=1,Arn=$NOTIFY_LAMBDA_ARN"
+```
+
+### Validación (Definition of Done)
+
+```bash
+# 1. Sembrar ticket de prueba vinculado a INC-TEST-P24-01
+aws dynamodb put-item --table-name TeleCorp_Operaciones --item '{
+  "PK": {"S": "TICKET#TCK-TEST-P25"},
+  "SK": {"S": "META"},
+  "GSI1PK": {"S": "ZONA#6mc5p8"},
+  "GSI1SK": {"S": "TS#2026-11-14T16:10:00Z"},
+  "ticket_id": {"S": "TCK-TEST-P25"},
+  "user_id": {"S": "DNI-70451289"},
+  "service_number": {"S": "999111222"},
+  "email": {"S": "correo_p2@dominio.com"},
+  "phone": {"S": "+51999111222"},
+  "geohash": {"S": "6mc5p8"},
+  "status": {"S": "Siendo atendida"},
+  "master_incident_id": {"S": "INC-TEST-P24-01"}
+}'
+
+# 2. Probar Hito 2: INCIDENCIA_IDENTIFICADA (invocación equivalente desde Step Functions)
+aws lambda invoke \
+  --function-name telecorp-notify-users \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{
+    "incident_id": "INC-TEST-P24-01",
+    "geohash": "6mc5p8",
+    "zone_name": "Cercado Centro - Hospital Loayza",
+    "milestone": "INCIDENCIA_IDENTIFICADA",
+    "priority_level": "CRITICA",
+    "ai_diagnosis": "Corte de enlace en ANT-LIM-042 afectando entorno hospitalario.",
+    "critical_pois": [{"name": "Hospital Nacional Arzobispo Loayza", "type": "hospital", "distance_m": 180}]
+  }' \
+  response_p2_5_identificada.json
+
+cat response_p2_5_identificada.json
+# Resultado esperado: "status": "NOTIFIED", "email_delivery_status": "SENT_SNS", "audit_records_written": 2
+
+# 3. Probar Hito 3: SERVICIO_RESTABLECIDO vía evento incidente.solucionado en EventBridge
+aws events put-events --entries '[{
+  "EventBusName": "telecorp-bus",
+  "Source": "telecorp.operaciones",
+  "DetailType": "incidente.solucionado",
+  "Detail": "{\"incident_id\":\"INC-TEST-P24-01\",\"ticket_id\":\"TCK-TEST-P25\",\"geohash\":\"6mc5p8\",\"new_status\":\"Solucionada\",\"changed_by\":\"OPERADOR\",\"note\":\"Enlace de fibra restablecido en ANT-LIM-042\",\"timestamp\":\"2026-11-14T17:05:00Z\"}"
+}]'
+
+sleep 3
+
+# 4. Verificar registros de auditoría EMAIL y SMS en TeleCorp_VentanasZonales
+aws dynamodb query \
+  --table-name TeleCorp_VentanasZonales \
+  --key-condition-expression "PK = :pk AND begins_with(SK, :sk)" \
+  --expression-attribute-values '{":pk":{"S":"TICKET#TCK-TEST-P25"},":sk":{"S":"NOTIF#"}}'
+```
+
+## 9. Progreso del Módulo P2
 
 | Tarea | Archivo / Recurso | Estado |
 | :--- | :--- | :--- |
@@ -396,21 +527,23 @@ aws dynamodb get-item \
 | **P2.2** — Motor de Recurrencia Estructural | `eventbridge_rules.json` + `eval_recurrence.py` | **Completado** |
 | **P2.3** — Puente Multi-Cloud AWS $\rightarrow$ GCP + Score | `lambdas/enrich_and_score.py` | **Completado** |
 | **P2.4** — Máquina de Estados AWS Step Functions | `state_machine.asl.json` (`TeleCorpSentinelWorkflow`) | **Completado** |
-| **P2.5** — Sistema de Notificaciones Omnicanal | `lambdas/notify_users.py` | Pendiente (Siguiente) |
+| **P2.5** — Sistema de Notificaciones Omnicanal (SNS) | `eventbridge_rules.json` + `lambdas/notify_users.py` | **Completado** |
 
-## 9. Notas de Sincronización para P1 y P3
+## 10. Notas de Sincronización para P1 y P3
 
-Los contratos congelados (`dynamodb_schemas.json`, `eventbridge_events.json`, `openapi.yaml`) **no cambian**; solo consideren estos puntos operativos al integrar:
+Los contratos congelados (`dynamodb_schemas.json`, `eventbridge_events.json`, `openapi.yaml`) **no cambian**; consideren estos puntos operativos al integrar:
 
 * **Para P1 (Datos e Ingesta):**
+  * **Parámetro SSM de Notificaciones:** En `setup_aws.sh`, reemplazar `/telecorp/ses/sender_email` por `/telecorp/sns/topic_arn` (`SecureString`) apuntando al tópico `telecorp-alertas-zonales`.
   * **Geohash de precisión 6:** `ingest_ticket.py` e `ingest_telemetry.py` deben calcular `geohash` con exactamente **6 caracteres** para cruzar reportes con antenas.
   * **Índice `GSI1_ZonaEstado`:** Al guardar `ANTENNA#<id>` (`SK=CURRENT`) en `TeleCorp_Operaciones`, llenar `GSI1PK="ZONA#<geohash>"` y `GSI1SK="ANTENNA#<id>"` con `health_status` válido (`NORMAL`, `CAIDA`, `SATURADA`, `INHABILITADA`).
   * **Historial de fallas de antena (`EVENT#`):** Cuando `ingest_telemetry.py` (o `storm_simulator.py --mode recurrent`) detecte un estado anómalo (`CAIDA`, `SATURADA`, `INHABILITADA`), debe insertar `PK="ANTENNA#<id>"`, `SK="EVENT#<YYYY-MM-DD>#<iso_ts>"` con `date_day`, `health_status` y `traffic_gb`; cuando la antena regrese a `NORMAL` ($60\text{–}129\text{ GB/min}$), actualizar `recovered_at` y `duration_sec`.
-  * **Incidentes Maestros en `GET /analytics/resumen` y `PATCH /tickets/{ticket_id}/estado`:** `enrich_and_score.py` persiste cada incidente con `GSI1PK="ACTIVE#true"`, `GSI1SK="SCORE#<00000>"` (5 dígitos con ceros a la izquierda para ordenamiento descendente) y Step Functions (`ConfirmarIncidenteZonal`) actualiza `status` a `"Siendo atendida"` (si es `CRITICA`) o `"En revisión"`, agregando `dispatch_mode`, `confirmed_at` y `workflow_execution_id`. Al solucionar/cerrar un incidente, actualizar `GSI1PK="ACTIVE#false"` y `status="Solucionada"`.
-  * **Bus `telecorp-bus`:** Publicar `incidencia.creada` y `antena.anomalia` con `geohash`, `lat`, `lon` y `timestamp`. No creen reglas duplicadas (`telecorp-collective-rule` y `telecorp-recurrence-rule` ya están configuradas).
+  * **Publicación de `incidente.solucionado`:** En `PATCH /tickets/{ticket_id}/estado`, cuando `new_status == "Solucionada"`, publicar el evento `incidente.solucionado` (`Source: "telecorp.operaciones"`) en `telecorp-bus` incluyendo `incident_id` (`master_incident_id`), `ticket_id`, `geohash`, `new_status`, `changed_by` y `note`. `notify_users.py` se encargará automáticamente de notificar el restablecimiento y cerrar en cascada el `IncidenteMaestro` (`GSI1PK="ACTIVE#false"`) y sus tickets hermanos.
+  * **Bus `telecorp-bus`:** Publicar `incidencia.creada` y `antena.anomalia` con `geohash`, `lat`, `lon` y `timestamp`. No creen reglas duplicadas (`telecorp-collective-rule`, `telecorp-recurrence-rule` y `telecorp-incident-resolved-rule` ya están configuradas).
 * **Para P3 (Frontend & IA GCP):**
+  * **Confirmación de Suscripción SNS:** Confirmar el enlace de suscripción al tópico `telecorp-alertas-zonales` enviado desde `no-reply@sns.amazonaws.com` para recibir en vivo las alertas durante la grabación del pitch.
   * **Coordenadas obligatorias:** `POST /tickets` debe enviar siempre `lat` y `lon` numéricos desde el portal para calcular la zona.
   * **Configuración de URL Cloud Run en SSM:** Al desplegar el microservicio FastAPI en GCP, actualizar `/telecorp/gcp/endpoint_url` en SSM Parameter Store (con o sin `/ia/analizar`; `enrich_and_score.py` normaliza la ruta automáticamente y cambia de `FALLBACK_LOCAL` a `GCP_GEMINI_OSM` en $\le 60\text{s}$).
   * **Contexto enriquecido para Gemini:** Cada texto en `descriptions` hacia `POST /ia/analizar` llegará con el prefijo `"[TIPO_PROBLEMA] descripción"`.
   * **Contrato de recurrencia hacia `POST /ia/analizar`:** `eval_recurrence.py` entrega `antenna_id`, `antenna_traffic_gb`, `structural_risk` (`boolean`) y `recent_failure_days` (`["YYYY-MM-DD", ...]`) listos para ser enviados al endpoint de GCP.
-  * **Campos y estados disponibles para el Dashboard NOC y Portal Usuario:** Cada `INCIDENT#<id>` incluye `critical_pois`, `priority_score`, `priority_level`, `ai_diagnosis`, `structural_recurrence_alert`, `ai_source`, `dispatch_mode` y `workflow_execution_id`, mientras que cada ticket individual vinculado recibe `ai_category`, `priority_score` y `priority_level`. Asegurar que el frontend reconozca tanto `"En revisión"` como `"Siendo atendida"` como estados activos en curso y habilite el botón **"Marcar como Solucionada"** en ambos casos.
+  * **Campos, estados y auditoría de notificaciones para el Dashboard NOC y Portal Usuario:** Cada `INCIDENT#<id>` incluye `critical_pois`, `priority_score`, `priority_level`, `ai_diagnosis`, `structural_recurrence_alert`, `ai_source`, `dispatch_mode` y `workflow_execution_id`; los tickets vinculados reciben `ai_category`, `priority_score` y `priority_level`; y la auditoría omnicanal queda en `TeleCorp_VentanasZonales` bajo `PK=TICKET#<id>`, `SK=NOTIF#<iso_ts>#<channel>` con estados `SENT_SNS` (Email) y `SIMULATED_SMS_ACADEMY` (SMS). Asegurar que el frontend reconozca tanto `"En revisión"` como `"Siendo atendida"` como estados activos en curso y habilite el botón **"Marcar como Solucionada"** en ambos casos.

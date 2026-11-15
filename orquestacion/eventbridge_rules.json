@@ -3,9 +3,8 @@
   "rules": [
     {
       "Name": "telecorp-collective-rule",
-      "EventBusName": "telecorp-bus",
+      "Description": "Enruta reportes de usuarios y anomalías de antena al detector colectivo < 24h",
       "State": "ENABLED",
-      "Description": "Enruta reportes ciudadanos y anomalías de antenas hacia el motor de detección colectiva (<24h)",
       "EventPattern": {
         "source": ["telecorp.ingesta", "telecorp.telemetria"],
         "detail-type": ["incidencia.creada", "antena.anomalia"]
@@ -14,14 +13,23 @@
     },
     {
       "Name": "telecorp-recurrence-rule",
-      "EventBusName": "telecorp-bus",
+      "Description": "Evalúa fallas recurrentes multi-día cuando una antena reporta anomalía",
       "State": "ENABLED",
-      "Description": "Evalúa fallas estructurales multi-día cada vez que una antena reporta anomalía",
       "EventPattern": {
         "source": ["telecorp.telemetria"],
         "detail-type": ["antena.anomalia"]
       },
       "TargetLambda": "telecorp-eval-recurrence"
+    },
+    {
+      "Name": "telecorp-incident-resolved-rule",
+      "Description": "Dispara notificación omnicanal SERVICIO_RESTABLECIDO al solucionar incidente/ticket",
+      "State": "ENABLED",
+      "EventPattern": {
+        "source": ["telecorp.operaciones"],
+        "detail-type": ["incidente.solucionado"]
+      },
+      "TargetLambda": "telecorp-notify-users"
     }
   ]
 }
