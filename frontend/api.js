@@ -2,6 +2,7 @@
 // Normaliza las respuestas para tolerar campos extra y pequeñas variantes del
 // contrato (p. ej. GET /tickets como arreglo o como { items: [...] }).
 import { CONFIG } from "./config.js";
+import { decodeGeohash } from "./app.js";
 import * as mock from "./mock.js";
 
 const TIMEOUT_MS = 8000;
@@ -164,10 +165,16 @@ export async function getIncidents() {
 
 /** GET /antenas (propuesto) */
 export async function getAntennas() {
-  const data = CONFIG.MOCK_MODE
-    ? await viaMock(() => mock.getAntennas())
-    : await request("GET", "/antenas");
-  return asList(data, "antennas", "antenas");
+  if (CONFIG.MOCK_MODE) return asList(await viaMock(() => mock.getAntennas()), "antennas", "antenas");
+  try {
+    return asList(await request("GET", "/antenas"), "antennas", "antenas");
+  } catch (err) {
+    if (err.status === 403 || err.status === 404) {
+      const { recurrent_antennas } = await getAnalytics();
+      return recurrent_antennas.map((a) => ({ ...decodeGeohash(a.geohash), ...a }));
+    }
+    throw err;
+  }
 }
 
 /**

@@ -2,9 +2,9 @@
 // este archivo se sirve tal cual desde S3/CloudFront.
 export const CONFIG = {
   // URL base del API Gateway, p. ej. "https://abc123.execute-api.us-east-1.amazonaws.com/prod"
-  API_BASE_URL: "",
+  API_BASE_URL: "https://z0zcs0rpvk.execute-api.us-east-1.amazonaws.com/prod",
   // true = usa datos simulados en memoria (mock.js) en lugar del API real
-  MOCK_MODE: true,
+  MOCK_MODE: false,
   // Intervalo de refresco del NOC en milisegundos
   POLL_MS: 8000,
 };
