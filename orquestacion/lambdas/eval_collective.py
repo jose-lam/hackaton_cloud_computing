@@ -225,6 +225,7 @@ def try_trigger_step_functions(
         "lon": lon,
         "trigger_type": trigger_type,
         "unique_users_count": unique_users_count,
+        "descriptions": sample_descriptions,
         "sample_descriptions": sample_descriptions,
         "antenna_id": antenna_id,
         "antenna_status": antenna_status,
