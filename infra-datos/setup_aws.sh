@@ -71,3 +71,100 @@ done
 
 echo "Tablas configuradas:"
 aws dynamodb list-tables --output table
+
+echo "Creando colas SQS..."
+
+for tipo in telemetry tickets; do
+  QUEUE_NAME="telecorp-${tipo}-q"
+  DLQ_NAME="telecorp-${tipo}-dlq"
+
+  if ! aws sqs get-queue-url \
+    --queue-name "$DLQ_NAME" >/dev/null 2>&1; then
+    aws sqs create-queue \
+      --queue-name "$DLQ_NAME" \
+      --attributes MessageRetentionPeriod=1209600
+  fi
+
+  if ! aws sqs get-queue-url \
+    --queue-name "$QUEUE_NAME" >/dev/null 2>&1; then
+    aws sqs create-queue \
+      --queue-name "$QUEUE_NAME"
+  fi
+
+  DLQ_URL=$(aws sqs get-queue-url \
+    --queue-name "$DLQ_NAME" \
+    --query QueueUrl --output text)
+
+  QUEUE_URL=$(aws sqs get-queue-url \
+    --queue-name "$QUEUE_NAME" \
+    --query QueueUrl --output text)
+
+  DLQ_ARN=$(aws sqs get-queue-attributes \
+    --queue-url "$DLQ_URL" \
+    --attribute-names QueueArn \
+    --query 'Attributes.QueueArn' --output text)
+
+  ATTRS=$(printf '{"RedrivePolicy":"{\\"deadLetterTargetArn\\":\\"%s\\",\\"maxReceiveCount\\":\\"5\\"}","VisibilityTimeout":"60"}' "$DLQ_ARN")
+
+  aws sqs set-queue-attributes \
+    --queue-url "$QUEUE_URL" \
+    --attributes "$ATTRS"
+
+  echo "Configurada: $QUEUE_NAME -> $DLQ_NAME"
+done
+
+echo "Colas SQS:"
+aws sqs list-queues --output table
+
+echo "Configurando EventBridge..."
+
+BUS_NAME="telecorp-bus"
+
+if aws events describe-event-bus \
+  --name "$BUS_NAME" >/dev/null 2>&1; then
+
+  echo "El bus $BUS_NAME ya existe."
+else
+  aws events create-event-bus \
+    --name "$BUS_NAME" \
+    --query 'EventBusArn' \
+    --output text
+fi
+
+echo "Bus EventBridge configurado:"
+
+aws events describe-event-bus \
+  --name "$BUS_NAME" \
+  --query '[Name,Arn]' \
+  --output table
+
+echo "Configurando SSM Parameter Store..."
+
+PARAMETERS=(
+  "/telecorp/thresholds/min_gb:60"
+  "/telecorp/thresholds/max_gb:129"
+  "/telecorp/thresholds/collective_users:10"
+  "/telecorp/thresholds/window_hours:24"
+  "/telecorp/thresholds/recurrence_days:3"
+)
+
+for entry in "${PARAMETERS[@]}"; do
+  name="${entry%%:*}"
+  value="${entry#*:}"
+
+  aws ssm put-parameter \
+    --name "$name" \
+    --value "$value" \
+    --type SecureString \
+    --overwrite \
+    --query Version \
+    --output text
+
+  echo "Configurado: $name"
+done
+
+echo "Parámetros SSM:"
+aws ssm describe-parameters \
+  --parameter-filters "Key=Name,Option=BeginsWith,Values=/telecorp/thresholds/" \
+  --query 'Parameters[*].[Name,Type]' \
+  --output table
