@@ -5,7 +5,7 @@ export AWS_DEFAULT_REGION=us-east-1
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 
-if [[ "$ACCOUNT" != "553662839025" ]]; then
+if [[ "$ACCOUNT" != "139694589223" ]]; then
   echo "ERROR: cuenta AWS incorrecta: $ACCOUNT"
   exit 1
 fi
