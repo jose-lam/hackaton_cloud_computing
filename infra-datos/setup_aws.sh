@@ -5,8 +5,10 @@ export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 EXPECTED_ACCOUNT="${TELECORP_ACCOUNT_ID:?Configura TELECORP_ACCOUNT_ID con la cuenta elegida para el despliegue}"
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 
-if [[ "$ACCOUNT" != "$EXPECTED_ACCOUNT" ]]; then
-  echo "ERROR: cuenta AWS incorrecta: $ACCOUNT (se esperaba $EXPECTED_ACCOUNT)" >&2
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+
+if [[ "$ACCOUNT" != "139694589223" ]]; then
+  echo "ERROR: cuenta AWS incorrecta: $ACCOUNT"
   exit 1
 fi
 echo "Cuenta AWS verificada: $ACCOUNT (${AWS_DEFAULT_REGION})"

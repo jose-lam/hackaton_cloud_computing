@@ -213,13 +213,13 @@ def _local_resilient_fallback(
     if "sin_internet" in joined_text or "internet" in joined_text or "datos" in joined_text:
         category = "CORTE_TOTAL_DATOS"
     elif "sin_senal" in joined_text or "señal" in joined_text or "senal" in joined_text:
-        category = "PERDIDA_COBERTURA_RF"
+        category = "SIN_SENAL"
     elif "llamada" in joined_text or "voz" in joined_text:
-        category = "DEGRADACION_VOZ"
+        category = "FALLA_LLAMADAS"
     elif "lent" in joined_text or "satur" in joined_text:
-        category = "CONGESTION_RED"
+        category = "INTERNET_LENTO"
     else:
-        category = "INCIDENCIA_GENERAL_SERVICIO"
+        category = "OTRO"
 
     is_anomalous = antenna_status in {"CAIDA", "SATURADA", "INHABILITADA"}
     early_anomaly = unique_users_count >= 3 and is_anomalous
@@ -545,6 +545,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "critical_pois": critical_pois,
         "zone_criticality_multiplier": zone_multiplier,
         "structural_recurrence_alert": structural_alert,
+        "ai_diagnosis": ai_diagnosis,
         "ai_executive_diagnosis": ai_diagnosis,
         "ai_source": ai_source,
         "priority_score": priority["priority_score"],

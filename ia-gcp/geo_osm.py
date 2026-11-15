@@ -3,7 +3,7 @@
 Devuelve los POIs críticos (hospitales, clínicas, colegios, universidades, zonas
 industriales) en un radio de 500 m y el multiplicador de criticidad de la zona.
 Consulta dos espejos de Overpass en paralelo (gana el primero válido). Si ambos fallan
-o tardan más de 4 s en total se usa un respaldo estático de POIs demo.
+o tardan más de 2,5 s en total se usa un respaldo estático de POIs demo.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ OVERPASS_MIRRORS: tuple[str, ...] = (
     "https://overpass-api.de/api/interpreter",  # secundario
 )
 RADIUS_M = 500
-OVERPASS_TIMEOUT_S = 4.0  # timeout total (ambos espejos)
+OVERPASS_TIMEOUT_S = 2.5  # timeout total (ambos espejos)
 CACHE_TTL_S = 3600
 MAX_POIS = 5
 USER_AGENT = "TeleCorpSentinel/1.0 (hackathon UTEC)"
