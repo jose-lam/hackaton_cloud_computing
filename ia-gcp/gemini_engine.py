@@ -144,15 +144,13 @@ def _get_client():
     global _client
     if _client is None:
         from google import genai
-        from google.genai import types
 
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY no configurada")
-        _client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(timeout=int(GEMINI_TIMEOUT_S * 1000)),  # milisegundos
-        )
+        # Sin timeout en http_options: la API exige >= 10 s y responde 400 con valores menores.
+        # El límite de GEMINI_TIMEOUT_S se aplica con asyncio.wait_for en analizar().
+        _client = genai.Client(api_key=api_key)
     return _client
 
 
