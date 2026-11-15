@@ -43,11 +43,13 @@ def encode_geohash(lat, lon, precision=6):
 
 def process_ticket(data, record):
     required = [
-        "user_id", "service_number", "email", "phone",
-        "location_text", "lat", "lon",
-        "problem_type", "description"
+    "user_id", "service_number",
+    "location_text", "lat", "lon",
+    "problem_type", "description"
     ]
 
+    data.setdefault("email", "")
+    data.setdefault("phone", "")
     for field in required:
         if field not in data:
             raise ValueError(f"Falta el campo: {field}")
