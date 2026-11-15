@@ -2,7 +2,8 @@
 
 Devuelve los POIs críticos (hospitales, clínicas, colegios, universidades, zonas
 industriales) en un radio de 500 m y el multiplicador de criticidad de la zona.
-Si Overpass falla o tarda más de 3 s se usa un respaldo estático de POIs demo.
+Consulta dos espejos de Overpass en paralelo (gana el primero válido). Si ambos fallan
+o tardan más de 4 s en total se usa un respaldo estático de POIs demo.
 """
 
 from __future__ import annotations
@@ -17,12 +18,16 @@ import httpx
 
 logger = logging.getLogger("telecorp.geo_osm")
 
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+# Espejos consultados en paralelo: gana la primera respuesta 200 válida.
+OVERPASS_MIRRORS: tuple[str, ...] = (
+    "https://overpass.openstreetmap.fr/api/interpreter",  # principal
+    "https://overpass-api.de/api/interpreter",  # secundario
+)
 RADIUS_M = 500
-OVERPASS_TIMEOUT_S = 3.0
+OVERPASS_TIMEOUT_S = 4.0  # timeout total (ambos espejos)
 CACHE_TTL_S = 3600
 MAX_POIS = 5
-USER_AGENT = "telecorp-sentinel-ai/1.0"
+USER_AGENT = "TeleCorpSentinel/1.0 (hackathon UTEC)"
 
 MULTIPLIERS: dict[str, float] = {
     "hospital": 3.0,
@@ -84,12 +89,10 @@ def _static_fallback(lat: float, lon: float) -> tuple[list[dict[str, Any]], floa
 def _build_query(lat: float, lon: float) -> str:
     around = f"around:{RADIUS_M},{lat:.6f},{lon:.6f}"
     return (
-        "[out:json][timeout:3];("
-        f'node["amenity"~"^(hospital|clinic|doctors|school|university)$"]({around});'
-        f'way["amenity"~"^(hospital|clinic|doctors|school|university)$"]({around});'
-        f'node["landuse"="industrial"]({around});'
-        f'way["landuse"="industrial"]({around});'
-        ");out tags center 60;"
+        "[out:json][timeout:5];("
+        f'nwr({around})[amenity~"hospital|clinic|doctors|school|university"];'
+        f"nwr({around})[landuse=industrial];"
+        ");out center 30;"
     )
 
 
@@ -116,12 +119,45 @@ def _parse_elements(lat: float, lon: float, elements: list[dict[str, Any]]) -> l
     return candidates
 
 
-async def _query_overpass(lat: float, lon: float) -> tuple[list[dict[str, Any]], float]:
+class OverpassInvalidResponse(Exception):
+    pass
+
+
+async def _query_mirror(client: httpx.AsyncClient, url: str, query: str) -> tuple[list[dict[str, Any]], str]:
+    """Consulta un espejo. Solo devuelve si la respuesta es 200 con JSON válido; si no, lanza."""
+    resp = await client.post(url, data={"data": query})
+    if resp.status_code != 200:
+        raise OverpassInvalidResponse(f"HTTP {resp.status_code}")
+    payload = resp.json()
+    elements = payload.get("elements") if isinstance(payload, dict) else None
+    if not isinstance(elements, list):
+        raise OverpassInvalidResponse("sin elements")
+    # Overpass puede responder 200 con un error de ejecución en "remark".
+    if not elements and "error" in str(payload.get("remark", "")).lower():
+        raise OverpassInvalidResponse("remark con error")
+    return elements, httpx.URL(url).host
+
+
+async def _query_overpass(lat: float, lon: float) -> tuple[tuple[list[dict[str, Any]], float], str]:
+    """Lanza todos los espejos en paralelo; gana la primera respuesta válida y se cancelan las demás."""
+    query = _build_query(lat, lon)
     async with httpx.AsyncClient(timeout=OVERPASS_TIMEOUT_S, headers={"User-Agent": USER_AGENT}) as client:
-        resp = await client.post(OVERPASS_URL, data={"data": _build_query(lat, lon)})
-        resp.raise_for_status()
-        elements = resp.json().get("elements", [])
-    return _finalize(_parse_elements(lat, lon, elements))
+        pending = {asyncio.create_task(_query_mirror(client, url, query)) for url in OVERPASS_MIRRORS}
+        last_exc: BaseException | None = None
+        try:
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    if task.exception() is None:
+                        elements, mirror = task.result()
+                        return _finalize(_parse_elements(lat, lon, elements)), mirror
+                    last_exc = task.exception()
+        finally:
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+    raise last_exc or OverpassInvalidResponse("ningún espejo respondió")
 
 
 async def consulta_poi(lat: float, lon: float, geohash: str) -> tuple[list[dict[str, Any]], float]:
@@ -134,10 +170,13 @@ async def consulta_poi(lat: float, lon: float, geohash: str) -> tuple[list[dict[
         return cached[1]
 
     try:
-        # wait_for como red de seguridad: httpx aplica el timeout por operación, no total.
-        result = await asyncio.wait_for(_query_overpass(lat, lon), timeout=OVERPASS_TIMEOUT_S)
+        # wait_for impone el timeout total: httpx lo aplica por operación, no por petición completa.
+        result, mirror = await asyncio.wait_for(_query_overpass(lat, lon), timeout=OVERPASS_TIMEOUT_S)
         _cache[cache_key] = (now, result)
-        logger.info("poi_overpass_ok", extra={"geohash": cache_key, "poi_count": len(result[0])})
+        logger.info(
+            "poi_overpass_ok",
+            extra={"geohash": cache_key, "poi_count": len(result[0]), "overpass_mirror": mirror},
+        )
         return result
     except Exception as exc:  # noqa: BLE001 - cualquier fallo -> respaldo estático
         logger.error("poi_overpass_failed", extra={"geohash": cache_key, "error_type": type(exc).__name__})
