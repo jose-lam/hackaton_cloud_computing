@@ -48,7 +48,8 @@ check_account() {
 }
 
 lambda_upsert() {
-  local module="$1" fn="$2" timeout="$3" zipfile="$TMP_DIR/$module.zip"
+  local module="$1" fn="$2" timeout="$3"
+  local zipfile="$TMP_DIR/$module.zip"
   (cd "$ROOT/lambdas" && zip -q "$zipfile" "$module.py")
   if aws lambda get-function --function-name "$fn" >/dev/null 2>&1; then
     aws lambda update-function-code --function-name "$fn" --zip-file "fileb://$zipfile" >/dev/null
