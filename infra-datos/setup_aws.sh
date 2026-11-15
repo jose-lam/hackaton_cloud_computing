@@ -3,7 +3,16 @@ set -euo pipefail
 
 export AWS_DEFAULT_REGION=us-east-1
 
+EXPECTED_ACCOUNT="${TELECORP_ACCOUNT_ID:?Debes configurar TELECORP_ACCOUNT_ID}"
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+
+if [[ "$ACCOUNT" != "$EXPECTED_ACCOUNT" ]]; then
+  echo "ERROR: cuenta AWS incorrecta: $ACCOUNT"
+  echo "Cuenta esperada: $EXPECTED_ACCOUNT"
+  exit 1
+fi
+
+echo "Cuenta AWS verificada: $ACCOUNT"
 
 if [[ "$ACCOUNT" != "553662839025" ]]; then
   echo "ERROR: cuenta AWS incorrecta: $ACCOUNT"
@@ -74,7 +83,7 @@ aws dynamodb list-tables --output table
 
 echo "Creando colas SQS..."
 
-for tipo in telemetry tickets; do
+for tipo in telemetry tickets logs; do
   QUEUE_NAME="telecorp-${tipo}-q"
   DLQ_NAME="telecorp-${tipo}-dlq"
 
