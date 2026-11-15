@@ -20,7 +20,7 @@ from pydantic import BaseModel
 logger = logging.getLogger("telecorp.gemini_engine")
 
 MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
-GEMINI_TIMEOUT_S = 4.0
+GEMINI_TIMEOUT_S = 6.0
 MAX_DIAGNOSIS_CHARS = 400
 
 CATEGORIES = ("CORTE_TOTAL_DATOS", "SIN_SENAL", "INTERNET_LENTO", "FALLA_LLAMADAS", "OTRO")
