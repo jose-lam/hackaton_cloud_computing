@@ -545,6 +545,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "critical_pois": critical_pois,
         "zone_criticality_multiplier": zone_multiplier,
         "structural_recurrence_alert": structural_alert,
+        "ai_diagnosis": ai_diagnosis,
         "ai_executive_diagnosis": ai_diagnosis,
         "ai_source": ai_source,
         "priority_score": priority["priority_score"],
