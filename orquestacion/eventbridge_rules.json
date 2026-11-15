@@ -1,0 +1,27 @@
+{
+  "event_bus_name": "telecorp-bus",
+  "rules": [
+    {
+      "Name": "telecorp-collective-rule",
+      "EventBusName": "telecorp-bus",
+      "State": "ENABLED",
+      "Description": "Enruta reportes ciudadanos y anomalías de antenas hacia el motor de detección colectiva (<24h)",
+      "EventPattern": {
+        "source": ["telecorp.ingesta", "telecorp.telemetria"],
+        "detail-type": ["incidencia.creada", "antena.anomalia"]
+      },
+      "TargetLambda": "telecorp-eval-collective"
+    },
+    {
+      "Name": "telecorp-recurrence-rule",
+      "EventBusName": "telecorp-bus",
+      "State": "ENABLED",
+      "Description": "Evalúa fallas estructurales multi-día cada vez que una antena reporta anomalía",
+      "EventPattern": {
+        "source": ["telecorp.telemetria"],
+        "detail-type": ["antena.anomalia"]
+      },
+      "TargetLambda": "telecorp-eval-recurrence"
+    }
+  ]
+}
