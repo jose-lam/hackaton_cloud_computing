@@ -30,7 +30,7 @@ def response(status, body):
         "headers": {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type,Authorization",
+            "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Amz-Date,X-Amz-Security-Token,X-Api-Key",
             "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS",
         },
         "body": json.dumps(
