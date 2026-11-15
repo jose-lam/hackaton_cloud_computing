@@ -19,8 +19,12 @@ from pydantic import BaseModel
 
 logger = logging.getLogger("telecorp.gemini_engine")
 
-MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
-GEMINI_TIMEOUT_S = 6.0
+DEFAULT_MODELS = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+# Modelos consultados en paralelo: gana la primera respuesta válida.
+MODELS: tuple[str, ...] = tuple(
+    dict.fromkeys(m.strip() for m in (os.environ.get("GEMINI_MODELS") or DEFAULT_MODELS).split(",") if m.strip())
+) or tuple(DEFAULT_MODELS.split(","))
+GEMINI_TIMEOUT_S = 4.0
 MAX_DIAGNOSIS_CHARS = 400
 
 CATEGORIES = ("CORTE_TOTAL_DATOS", "SIN_SENAL", "INTERNET_LENTO", "FALLA_LLAMADAS", "OTRO")
@@ -144,13 +148,18 @@ def _get_client():
     global _client
     if _client is None:
         from google import genai
+        from google.genai import types
 
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY no configurada")
         # Sin timeout en http_options: la API exige >= 10 s y responde 400 con valores menores.
         # El límite de GEMINI_TIMEOUT_S se aplica con asyncio.wait_for en analizar().
-        _client = genai.Client(api_key=api_key)
+        # retry_options explícito con 1 intento: sin reintentos ante 503/429/5xx ni errores de conexión.
+        _client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=1)),
+        )
     return _client
 
 
@@ -159,7 +168,8 @@ def _thinking_config(model: str):
 
     - Gemini 2.x: thinking_budget=0 desactiva el thinking.
     - Gemini 3.x: thinking_budget ya no se recomienda; se usa thinking_level.
-      "minimal" existe en los Flash; los Pro no lo aceptan, así que usan "low".
+      "minimal" existe en los Flash y Flash-Lite (3.5 y 3.1); los Pro no lo aceptan,
+      así que usan "low".
     Nunca se envían ambos parámetros (la API devuelve 400).
     """
     from google.genai import types
@@ -171,12 +181,14 @@ def _thinking_config(model: str):
     return types.ThinkingConfig(thinking_level=level)
 
 
-async def _call_gemini(descriptions: list[str], antenna_id: str | None, traffic_gb: float | None, failure_days: list[str]) -> dict[str, Any]:
+async def _call_gemini(
+    model: str, descriptions: list[str], antenna_id: str | None, traffic_gb: float | None, failure_days: list[str]
+) -> dict[str, Any]:
     from google.genai import types
 
     client = _get_client()
     response = await client.aio.models.generate_content(
-        model=MODEL_NAME,
+        model=model,
         contents=_build_prompt(descriptions, antenna_id, traffic_gb, failure_days),
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_INSTRUCTION,
@@ -184,13 +196,50 @@ async def _call_gemini(descriptions: list[str], antenna_id: str | None, traffic_
             response_schema=GeminiVerdict,
             temperature=0.1,
             max_output_tokens=512,
-            thinking_config=_thinking_config(MODEL_NAME),  # menor latencia
+            thinking_config=_thinking_config(model),  # menor latencia
         ),
     )
     verdict = response.parsed
     if not isinstance(verdict, GeminiVerdict):
         verdict = GeminiVerdict.model_validate_json(response.text or "")
-    return verdict.model_dump()
+    result = _sanitize(verdict.model_dump(), len(descriptions))
+    if not result["ai_executive_diagnosis"]:
+        raise ValueError("diagnóstico vacío")
+    return result
+
+
+async def _race_models(
+    descriptions: list[str], antenna_id: str | None, traffic_gb: float | None, failure_days: list[str]
+) -> tuple[dict[str, Any], str]:
+    """Lanza la misma petición a todos los modelos; gana la primera respuesta válida y se cancela el resto."""
+    tasks = {
+        asyncio.create_task(_call_gemini(m, descriptions, antenna_id, traffic_gb, failure_days)): m for m in MODELS
+    }
+    pending = set(tasks)
+    last_exc: BaseException | None = None
+    try:
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                exc = task.exception()
+                if exc is None:
+                    return task.result(), tasks[task]
+                last_exc = exc
+                logger.error(
+                    "gemini_model_failed",
+                    extra={
+                        "ai_model": tasks[task],
+                        "error_type": type(exc).__name__,
+                        "status_code": _error_status_code(exc),
+                        "error_message": _safe_error_message(exc, descriptions),
+                    },
+                )
+    finally:
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+    raise last_exc or RuntimeError("ningún modelo respondió")
 
 
 def _sanitize(result: dict[str, Any], n_descriptions: int) -> dict[str, Any]:
@@ -251,12 +300,10 @@ async def analizar(
     if not descriptions:
         return fallback_analysis(descriptions, antenna_id, antenna_traffic_gb, failure_days), "fallback"
     try:
-        raw = await asyncio.wait_for(
-            _call_gemini(descriptions, antenna_id, antenna_traffic_gb, failure_days), timeout=GEMINI_TIMEOUT_S
+        result, model = await asyncio.wait_for(
+            _race_models(descriptions, antenna_id, antenna_traffic_gb, failure_days), timeout=GEMINI_TIMEOUT_S
         )
-        result = _sanitize(raw, len(descriptions))
-        if not result["ai_executive_diagnosis"]:
-            raise ValueError("diagnóstico vacío")
+        logger.info("gemini_ok", extra={"ai_model": model, "category": result["normalized_category"]})
         return result, "gemini"
     except Exception as exc:  # noqa: BLE001 - cualquier fallo -> fallback sin IA
         logger.error(

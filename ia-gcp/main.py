@@ -31,7 +31,7 @@ import geo_osm
 _SAFE_EXTRA_FIELDS = (
     "geohash", "poi_count", "error_type", "descriptions_count", "unique_users_count",
     "antenna_id", "ai_source", "multiplier", "category", "duration_ms", "mock",
-    "status_code", "error_message", "overpass_mirror",
+    "status_code", "error_message", "overpass_mirror", "ai_model",
 )
 
 
@@ -62,7 +62,7 @@ def _setup_logging() -> None:
 _setup_logging()
 logger = logging.getLogger("telecorp.main")
 
-TOTAL_BUDGET_S = 7.0  # el llamador corta a los 8 s
+TOTAL_BUDGET_S = 5.5  # el llamador corta a los 8 s
 
 # ---------------------------------------------------------------------------
 # Modelos (contrato)
