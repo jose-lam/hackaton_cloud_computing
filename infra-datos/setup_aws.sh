@@ -71,3 +71,47 @@ done
 
 echo "Tablas configuradas:"
 aws dynamodb list-tables --output table
+
+echo "Creando colas SQS..."
+
+for tipo in telemetry tickets; do
+  QUEUE_NAME="telecorp-${tipo}-q"
+  DLQ_NAME="telecorp-${tipo}-dlq"
+
+  if ! aws sqs get-queue-url \
+    --queue-name "$DLQ_NAME" >/dev/null 2>&1; then
+    aws sqs create-queue \
+      --queue-name "$DLQ_NAME" \
+      --attributes MessageRetentionPeriod=1209600
+  fi
+
+  if ! aws sqs get-queue-url \
+    --queue-name "$QUEUE_NAME" >/dev/null 2>&1; then
+    aws sqs create-queue \
+      --queue-name "$QUEUE_NAME"
+  fi
+
+  DLQ_URL=$(aws sqs get-queue-url \
+    --queue-name "$DLQ_NAME" \
+    --query QueueUrl --output text)
+
+  QUEUE_URL=$(aws sqs get-queue-url \
+    --queue-name "$QUEUE_NAME" \
+    --query QueueUrl --output text)
+
+  DLQ_ARN=$(aws sqs get-queue-attributes \
+    --queue-url "$DLQ_URL" \
+    --attribute-names QueueArn \
+    --query 'Attributes.QueueArn' --output text)
+
+  ATTRS=$(printf '{"RedrivePolicy":"{\\"deadLetterTargetArn\\":\\"%s\\",\\"maxReceiveCount\\":\\"5\\"}","VisibilityTimeout":"60"}' "$DLQ_ARN")
+
+  aws sqs set-queue-attributes \
+    --queue-url "$QUEUE_URL" \
+    --attributes "$ATTRS"
+
+  echo "Configurada: $QUEUE_NAME -> $DLQ_NAME"
+done
+
+echo "Colas SQS:"
+aws sqs list-queues --output table
