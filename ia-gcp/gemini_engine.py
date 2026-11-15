@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import unicodedata
 from typing import Any, Literal
 
@@ -213,6 +214,34 @@ def _sanitize(result: dict[str, Any], n_descriptions: int) -> dict[str, Any]:
     }
 
 
+MAX_ERROR_MESSAGE_CHARS = 300
+_API_KEY_PATTERN = re.compile(r"AIza[0-9A-Za-z_\-]{20,}")
+
+
+def _error_status_code(exc: Exception) -> int | None:
+    """Código HTTP de la excepción si existe (google.genai APIError o httpx)."""
+    code = getattr(exc, "code", None)  # google.genai.errors.APIError
+    if isinstance(code, int):
+        return code
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _safe_error_message(exc: Exception, descriptions: list[str]) -> str:
+    """Mensaje de la excepción (máx 300 caracteres) sin claves ni texto de usuarios."""
+    msg = getattr(exc, "message", None) or str(exc) or type(exc).__name__
+    msg = " ".join(str(msg).split())
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if api_key:
+        msg = msg.replace(api_key, "[REDACTED]")
+    msg = _API_KEY_PATTERN.sub("[REDACTED]", msg)
+    for desc in descriptions:  # por si la API hace eco del contenido enviado
+        if desc and len(desc) >= 8:
+            msg = msg.replace(desc, "[DESCRIPCION]")
+    return msg[:MAX_ERROR_MESSAGE_CHARS]
+
+
 async def analizar(
     descriptions: list[str],
     antenna_id: str | None = None,
@@ -232,5 +261,12 @@ async def analizar(
             raise ValueError("diagnóstico vacío")
         return result, "gemini"
     except Exception as exc:  # noqa: BLE001 - cualquier fallo -> fallback sin IA
-        logger.error("gemini_failed", extra={"error_type": type(exc).__name__})
+        logger.error(
+            "gemini_failed",
+            extra={
+                "error_type": type(exc).__name__,
+                "status_code": _error_status_code(exc),
+                "error_message": _safe_error_message(exc, descriptions),
+            },
+        )
         return fallback_analysis(descriptions, antenna_id, antenna_traffic_gb, failure_days), "fallback"

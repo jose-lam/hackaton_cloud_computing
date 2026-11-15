@@ -31,6 +31,7 @@ import geo_osm
 _SAFE_EXTRA_FIELDS = (
     "geohash", "poi_count", "error_type", "descriptions_count", "unique_users_count",
     "antenna_id", "ai_source", "multiplier", "category", "duration_ms", "mock",
+    "status_code", "error_message",
 )
 
 
