@@ -115,3 +115,25 @@ done
 
 echo "Colas SQS:"
 aws sqs list-queues --output table
+
+echo "Configurando EventBridge..."
+
+BUS_NAME="telecorp-bus"
+
+if aws events describe-event-bus \
+  --name "$BUS_NAME" >/dev/null 2>&1; then
+
+  echo "El bus $BUS_NAME ya existe."
+else
+  aws events create-event-bus \
+    --name "$BUS_NAME" \
+    --query 'EventBusArn' \
+    --output text
+fi
+
+echo "Bus EventBridge configurado:"
+
+aws events describe-event-bus \
+  --name "$BUS_NAME" \
+  --query '[Name,Arn]' \
+  --output table
