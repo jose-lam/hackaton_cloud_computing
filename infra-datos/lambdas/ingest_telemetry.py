@@ -1,7 +1,9 @@
 import json
+from datetime import datetime
 from decimal import Decimal
 
 import boto3
+from boto3.dynamodb.conditions import Key
 
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table("TeleCorp_Operaciones")
@@ -71,12 +73,17 @@ def encode_geohash(lat, lon, precision=6):
     return result
 
 
+def _parse_iso(ts):
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
 def process_telemetry(data):
     antenna_id = str(data["antenna_id"])
     lat = float(data["lat"])
     lon = float(data["lon"])
     traffic = Decimal(str(data["traffic_gb_min"]))
     timestamp = data["timestamp"]
+    date_day = timestamp[:10]
 
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise ValueError("Coordenadas invalidas")
@@ -104,6 +111,9 @@ def process_telemetry(data):
     ).get("Item", {})
 
     previous = previous_item.get("last_traffic_gb")
+    previous_status = previous_item.get("health_status")
+    previous_updated = str(previous_item.get("updated_at", ""))
+
     drop = (
         previous is not None
         and previous > 0
@@ -132,21 +142,46 @@ def process_telemetry(data):
         }
     )
 
-
-
-    previous_status = previous_item.get("health_status")
-
-    if previous_status != status:
-        table.put_item(
-            Item={
-                "PK": f"ANTENNA#{antenna_id}",
-                "SK": f"EVENT#{timestamp[:10]}#{timestamp}",
-                "health_status": status,
-                "traffic_gb": traffic,
-                "geohash": geohash,
-                "updated_at": timestamp
-            }
+    # Registrar evento historico ante estado anomalo (cambio de estado o nuevo dia)
+    if status != "NORMAL":
+        if previous_status != status or previous_updated[:10] != date_day:
+            table.put_item(
+                Item={
+                    "PK": f"ANTENNA#{antenna_id}",
+                    "SK": f"EVENT#{date_day}#{timestamp}",
+                    "GSI1PK": "FAILURES#ALL",
+                    "GSI1SK": f"TS#{timestamp}",
+                    "antenna_id": antenna_id,
+                    "date_day": date_day,
+                    "health_status": status,
+                    "traffic_gb": traffic,
+                    "geohash": geohash,
+                    "updated_at": timestamp
+                }
+            )
+    # Cerrar ultimo evento anomalo con recovered_at y duration_sec al volver a NORMAL
+    elif previous_status and previous_status != "NORMAL":
+        resp = table.query(
+            KeyConditionExpression=Key("PK").eq(f"ANTENNA#{antenna_id}") & Key("SK").begins_with("EVENT#"),
+            ScanIndexForward=False,
+            Limit=1
         )
+        items = resp.get("Items", [])
+        if items and "recovered_at" not in items[0]:
+            last_event = items[0]
+            try:
+                start_ts = last_event["SK"].split("#", 2)[2]
+                duration = max(0, int((_parse_iso(timestamp) - _parse_iso(start_ts)).total_seconds()))
+            except Exception:
+                duration = 0
+            table.update_item(
+                Key={"PK": last_event["PK"], "SK": last_event["SK"]},
+                UpdateExpression="SET recovered_at=:rec, duration_sec=:dur",
+                ExpressionAttributeValues={
+                    ":rec": timestamp,
+                    ":dur": duration
+                }
+            )
 
     if status != "NORMAL" or drop:
         detail = {
