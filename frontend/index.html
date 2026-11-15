@@ -1,165 +1,33 @@
 <!doctype html>
-<html lang="es">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Red TeleCorp Sentinel AI · Portal Ciudadano</title>
-  <meta name="description" content="Reporta fallas de servicio y consulta el estado de tus reportes." />
-  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
-  <link rel="stylesheet" href="styles.css" />
-</head>
-<body class="min-h-screen bg-slate-50 text-slate-900 antialiased">
-  <a href="#reporte" class="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-white focus:px-3 focus:py-2">Saltar al contenido</a>
-
-  <header class="bg-sky-800 text-white">
-    <div class="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-4">
-      <div>
-        <p class="text-xs font-semibold uppercase tracking-widest text-sky-200">Red TeleCorp</p>
-        <h1 class="text-xl font-bold sm:text-2xl">Sentinel AI · Portal Ciudadano</h1>
-      </div>
-      <div class="flex items-center gap-3">
-        <span id="mock-slot"></span>
-        <a href="noc.html" class="rounded border border-sky-300/60 px-3 py-1.5 text-sm hover:bg-sky-700">Ir al NOC</a>
-      </div>
-    </div>
-  </header>
-
-  <main class="mx-auto max-w-5xl space-y-8 px-4 py-6">
-    <!-- 1. Formulario de reporte -->
-    <section id="reporte" aria-labelledby="reporte-title" class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200 sm:p-6">
-      <h2 id="reporte-title" class="text-lg font-bold">Reportar una falla de servicio</h2>
-      <p class="mt-1 text-sm text-slate-600">Los campos marcados con <span aria-hidden="true">*</span><span class="sr-only">asterisco</span> son obligatorios.</p>
-
-      <form id="ticket-form" class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2" novalidate>
-        <div>
-          <label for="user_id" class="block text-sm font-medium">ID de usuario (DNI) *</label>
-          <input id="user_id" name="user_id" required autocomplete="off" placeholder="DNI-70451289"
-                 class="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" aria-describedby="user_id-err" />
-          <p id="user_id-err" class="field-error mt-1 hidden text-sm text-red-700"></p>
-        </div>
-        <div>
-          <label for="service_number" class="block text-sm font-medium">Número de servicio *</label>
-          <input id="service_number" name="service_number" required inputmode="numeric" placeholder="999111222"
-                 class="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" aria-describedby="service_number-err" />
-          <p id="service_number-err" class="field-error mt-1 hidden text-sm text-red-700"></p>
-        </div>
-        <div>
-          <label for="email" class="block text-sm font-medium">Correo electrónico *</label>
-          <input id="email" name="email" type="email" required autocomplete="email" placeholder="usuario@dominio.com"
-                 class="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" aria-describedby="email-err" />
-          <p id="email-err" class="field-error mt-1 hidden text-sm text-red-700"></p>
-        </div>
-        <div>
-          <label for="phone" class="block text-sm font-medium">Teléfono de contacto *</label>
-          <input id="phone" name="phone" type="tel" required autocomplete="tel" placeholder="+51999111222" value="+51"
-                 class="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" aria-describedby="phone-hint phone-err" />
-          <p id="phone-hint" class="mt-1 text-xs text-slate-500">Formato: +51 seguido de 9 dígitos.</p>
-          <p id="phone-err" class="field-error mt-1 hidden text-sm text-red-700"></p>
-        </div>
-
-        <fieldset class="rounded-lg border border-slate-200 p-3 sm:col-span-2">
-          <legend class="px-1 text-sm font-semibold">Ubicación del inconveniente</legend>
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div class="sm:col-span-2">
-              <label for="zone" class="block text-sm font-medium">Zona (demo)</label>
-              <select id="zone" class="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2">
-                <option value="">— Selecciona una zona —</option>
-              </select>
-            </div>
-            <div class="sm:col-span-2">
-              <label for="location_text" class="block text-sm font-medium">Dirección o referencia *</label>
-              <input id="location_text" name="location_text" required placeholder="Av. Alfonso Ugarte 825, Cercado de Lima"
-                     class="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" aria-describedby="location_text-err" />
-              <p id="location_text-err" class="field-error mt-1 hidden text-sm text-red-700"></p>
-            </div>
-            <div>
-              <label for="lat" class="block text-sm font-medium">Latitud *</label>
-              <input id="lat" name="lat" required inputmode="decimal" placeholder="-12.0464"
-                     class="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" aria-describedby="lat-err" />
-              <p id="lat-err" class="field-error mt-1 hidden text-sm text-red-700"></p>
-            </div>
-            <div>
-              <label for="lon" class="block text-sm font-medium">Longitud *</label>
-              <input id="lon" name="lon" required inputmode="decimal" placeholder="-77.0428"
-                     class="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" aria-describedby="lon-err" />
-              <p id="lon-err" class="field-error mt-1 hidden text-sm text-red-700"></p>
-            </div>
-            <div class="sm:col-span-2 flex flex-wrap items-center gap-3">
-              <button type="button" id="geo-btn" class="rounded-md border border-sky-700 px-3 py-2 text-sm font-medium text-sky-800 hover:bg-sky-50 disabled:opacity-60">
-                Usar mi ubicación
-              </button>
-              <span id="geo-msg" class="text-sm text-slate-600" aria-live="polite"></span>
-            </div>
-          </div>
-        </fieldset>
-
-        <div>
-          <label for="incident_time" class="block text-sm font-medium">Fecha y hora del inconveniente *</label>
-          <input id="incident_time" name="incident_time" type="datetime-local" required
-                 class="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" aria-describedby="incident_time-err" />
-          <p id="incident_time-err" class="field-error mt-1 hidden text-sm text-red-700"></p>
-        </div>
-        <div>
-          <label for="problem_type" class="block text-sm font-medium">Tipo de problema *</label>
-          <select id="problem_type" name="problem_type" required
-                  class="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2" aria-describedby="problem_type-err">
-            <option value="">— Selecciona —</option>
-          </select>
-          <p id="problem_type-err" class="field-error mt-1 hidden text-sm text-red-700"></p>
-        </div>
-        <div class="sm:col-span-2">
-          <label for="description" class="block text-sm font-medium">Descripción *</label>
-          <textarea id="description" name="description" required maxlength="300" rows="3"
-                    placeholder="Cuéntanos qué ocurre (máximo 300 caracteres)"
-                    class="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" aria-describedby="desc-count description-err"></textarea>
-          <div class="mt-1 flex justify-between gap-2">
-            <p id="description-err" class="field-error hidden text-sm text-red-700"></p>
-            <p id="desc-count" class="ml-auto text-xs text-slate-500" aria-live="polite">0 / 300</p>
-          </div>
-        </div>
-
-        <div class="sm:col-span-2 flex flex-wrap items-center gap-3">
-          <button type="submit" id="submit-btn"
-                  class="inline-flex items-center gap-2 rounded-md bg-sky-700 px-5 py-2.5 font-semibold text-white hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60">
-            Enviar reporte
-          </button>
-          <p id="form-msg" class="text-sm" role="status" aria-live="polite"></p>
-        </div>
-      </form>
-
-      <div id="last-ticket" class="mt-4 hidden"></div>
-    </section>
-
-    <!-- 2. Consulta de estado -->
-    <section id="consulta" aria-labelledby="consulta-title" class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200 sm:p-6">
-      <h2 id="consulta-title" class="text-lg font-bold">Consultar el estado de un reporte</h2>
-      <form id="search-form" class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end" novalidate>
-        <div>
-          <label for="search-by" class="block text-sm font-medium">Buscar por</label>
-          <select id="search-by" class="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 sm:w-44">
-            <option value="ticket_id">Código de ticket</option>
-            <option value="user_id">ID de usuario</option>
-          </select>
-        </div>
-        <div class="flex-1">
-          <label for="search-q" class="block text-sm font-medium">Valor</label>
-          <input id="search-q" required placeholder="TCK-DEMO01" autocomplete="off"
-                 class="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" />
-        </div>
-        <button type="submit" id="search-btn"
-                class="inline-flex items-center justify-center gap-2 rounded-md bg-slate-800 px-5 py-2.5 font-semibold text-white hover:bg-slate-900 disabled:opacity-60">
-          Consultar
-        </button>
-      </form>
-      <p class="mt-2 text-xs text-slate-500" id="search-hint"></p>
-      <div id="search-results" class="mt-4 space-y-4" aria-live="polite"></div>
-    </section>
-  </main>
-
-  <footer class="mx-auto max-w-5xl px-4 pb-8 text-xs text-slate-500">
-    Red TeleCorp Sentinel AI · Tus datos se usan solo para atender el reporte.
-  </footer>
-
-  <script type="module" src="portal.js"></script>
-</body>
+<html lang="es-PE" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0a0e14" />
+    <meta name="description" content="Reporta fallas de internet, señal o llamadas y sigue su atención en línea. Portal ciudadano y centro de operaciones de Red TeleCorp Sentinel AI." />
+    <meta name="application-name" content="Red TeleCorp Sentinel AI" />
+    <meta name="robots" content="index, follow" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="es_PE" />
+    <meta property="og:site_name" content="Red TeleCorp Sentinel AI" />
+    <meta property="og:title" content="Reporta un problema con tu servicio · Red TeleCorp" />
+    <meta property="og:description" content="Reporta fallas de tu servicio en menos de 2 minutos y sigue su atención en tiempo real." />
+    <meta name="twitter:card" content="summary" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="apple-touch-icon" href="./favicon.svg" />
+    <title>Red TeleCorp Sentinel AI</title>
+    <script>
+      // Evita el destello oscuro al cargar el portal (rutas fuera de #/noc usan tema claro)
+      if (!location.hash.startsWith("#/noc")) {
+        document.documentElement.classList.remove("dark");
+        document.documentElement.classList.add("theme-light");
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>Esta aplicación necesita JavaScript habilitado.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>
