@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger("telecorp.gemini_engine")
 
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 GEMINI_TIMEOUT_S = 4.0
 MAX_DIAGNOSIS_CHARS = 400
 
@@ -155,6 +155,23 @@ def _get_client():
     return _client
 
 
+def _thinking_config(model: str):
+    """Mínimo razonamiento posible según la familia del modelo.
+
+    - Gemini 2.x: thinking_budget=0 desactiva el thinking.
+    - Gemini 3.x: thinking_budget ya no se recomienda; se usa thinking_level.
+      "minimal" existe en los Flash; los Pro no lo aceptan, así que usan "low".
+    Nunca se envían ambos parámetros (la API devuelve 400).
+    """
+    from google.genai import types
+
+    name = model.lower().removeprefix("models/")
+    if name.startswith("gemini-2"):
+        return types.ThinkingConfig(thinking_budget=0)
+    level = types.ThinkingLevel.LOW if "pro" in name else types.ThinkingLevel.MINIMAL
+    return types.ThinkingConfig(thinking_level=level)
+
+
 async def _call_gemini(descriptions: list[str], antenna_id: str | None, traffic_gb: float | None, failure_days: list[str]) -> dict[str, Any]:
     from google.genai import types
 
@@ -168,7 +185,7 @@ async def _call_gemini(descriptions: list[str], antenna_id: str | None, traffic_
             response_schema=GeminiVerdict,
             temperature=0.1,
             max_output_tokens=512,
-            thinking_config=types.ThinkingConfig(thinking_budget=0),  # menor latencia
+            thinking_config=_thinking_config(MODEL_NAME),  # menor latencia
         ),
     )
     verdict = response.parsed
