@@ -1,8 +1,8 @@
-"""Red TeleCorp Sentinel AI - microservicio de IA (Google Cloud Run).
+"""Red TeleCorp Sentinel AI - microservicio de IA (Azure Container Apps; modelo Gemini vía API de Google AI Studio).
 
 Variables de entorno:
   API_KEY         clave compartida que el llamador envía en X-API-Key (obligatoria)
-  GEMINI_API_KEY  clave de Gemini (si falta se usa el fallback sin IA)
+  GEMINI_API_KEY  clave de la API de Google AI Studio (Gemini; si falta se usa el fallback sin IA)
   MOCK_MODE       "true" para devolver el JSON de ejemplo sin servicios externos
 """
 

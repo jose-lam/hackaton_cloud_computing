@@ -17,5 +17,5 @@ USER appuser
 
 EXPOSE 8080
 
-# Cloud Run inyecta $PORT; exec para que uvicorn reciba SIGTERM directamente.
+# Azure Container Apps define PORT (--env-vars PORT=8080, --target-port 8080); exec para que uvicorn reciba SIGTERM directamente.
 CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --proxy-headers --no-access-log"]

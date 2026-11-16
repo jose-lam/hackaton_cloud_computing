@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pruebas locales del microservicio IA de Red TeleCorp Sentinel AI.
 #
-# 1) Arranca el servicio en otra terminal (desde ia-gcp/):
+# 1) Arranca el servicio en otra terminal (desde ia-azure/):
 #      export API_KEY=...  GEMINI_API_KEY=...   # opcional: MOCK_MODE=true
 #      uvicorn main:app --port 8080
 # 2) Ejecuta:  API_KEY=... ./test_local.sh
