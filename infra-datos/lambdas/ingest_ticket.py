@@ -1,5 +1,5 @@
-
 import json
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -43,9 +43,9 @@ def encode_geohash(lat, lon, precision=6):
 
 def process_ticket(data, record):
     required = [
-    "user_id", "service_number",
-    "location_text", "lat", "lon",
-    "problem_type", "description"
+        "user_id", "service_number",
+        "location_text", "lat", "lon",
+        "problem_type", "description"
     ]
 
     data.setdefault("email", "")
@@ -71,6 +71,7 @@ def process_ticket(data, record):
             sent_ms / 1000, tz=timezone.utc
         ).isoformat().replace("+00:00", "Z")
     )
+    incident_time = str(data.get("incident_time") or timestamp)
 
     geohash = encode_geohash(lat, lon)
     pk = f"TICKET#{ticket_id}"
@@ -91,6 +92,7 @@ def process_ticket(data, record):
         "geohash": geohash,
         "problem_type": str(data["problem_type"]),
         "description": str(data["description"]),
+        "incident_time": incident_time,
         "status": "Registrada",
         "created_at": timestamp
     }
@@ -117,6 +119,7 @@ def process_ticket(data, record):
     }
 
     table.put_item(Item=history)
+    print(f"Ticket {ticket_id}: Registrada")
 
     detail = {
         "ticket_id": ticket_id,
@@ -129,36 +132,42 @@ def process_ticket(data, record):
         "lon": lon,
         "problem_type": str(data["problem_type"]),
         "description": str(data["description"]),
+        "incident_time": incident_time,
         "timestamp": timestamp
     }
 
-    response = events.put_events(
-        Entries=[{
-            "Source": "telecorp.ingesta",
-            "DetailType": "incidencia.creada",
-            "Detail": json.dumps(detail),
-            "EventBusName": "telecorp-bus"
-        }]
-    )
-
-    if response["FailedEntryCount"] > 0:
-        raise RuntimeError("Error publicando en EventBridge")
-
-    print(f"Ticket {ticket_id}: Registrada")
+    return (geohash, user_id), {
+        "Source": "telecorp.ingesta",
+        "DetailType": "incidencia.creada",
+        "Detail": json.dumps(detail),
+        "EventBusName": "telecorp-bus"
+    }
 
 
 def lambda_handler(event, context):
     failures = []
+    seen_in_batch = set()
+    eb_entries = []
 
     for record in event["Records"]:
         try:
             data = json.loads(record["body"])
-            process_ticket(data, record)
+            dedup_key, eb_entry = process_ticket(data, record)
+            if dedup_key not in seen_in_batch:
+                seen_in_batch.add(dedup_key)
+                eb_entries.append(eb_entry)
         except Exception as error:
             print(f"Error: {error}")
             failures.append({
                 "itemIdentifier": record["messageId"]
             })
 
-    return {"batchItemFailures": failures}
+    # Espaciado controlado hacia EventBridge para mantener <= 1 Lambda eval_collective activa
+    for idx, entry in enumerate(eb_entries):
+        response = events.put_events(Entries=[entry])
+        if response["FailedEntryCount"] > 0:
+            raise RuntimeError("Error publicando en EventBridge")
+        if idx < len(eb_entries) - 1:
+            time.sleep(0.25)
 
+    return {"batchItemFailures": failures}

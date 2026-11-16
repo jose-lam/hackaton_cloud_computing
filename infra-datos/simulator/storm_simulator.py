@@ -7,7 +7,7 @@ En modo recurrent se siembra el historial en DynamoDB y se publica la falla actu
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 import json
 import sys
@@ -36,7 +36,7 @@ def telemetry(antenna, zone, traffic, timestamp, zone_name):
     }
 
 
-def ticket(run_id, group, number, zone, description, location):
+def ticket(run_id, group, number, zone, description, location, incident_ts):
     label = f"{group}-{number:02d}"
     return {
         "ticket_id": f"TCK-SIM-{run_id}-{label}",
@@ -48,15 +48,11 @@ def ticket(run_id, group, number, zone, description, location):
         "lat": zone[0], "lon": zone[1],
         "problem_type": "SIN_INTERNET",
         "description": description,
+        "incident_time": iso(incident_ts),
     }
 
 
 def build_scenario(mode, now, run_id):
-    """Devuelve fases de (descripcion, tipo, mensajes).
-
-    Las fases separadas permiten esperar que el estado de antenas se indexe
-    antes de comenzar el aluvion de tickets en SQS estandar.
-    """
     if mode == "normal":
         return [(
             "telemetria normal (70-115 GB/min)", "telemetry",
@@ -74,7 +70,7 @@ def build_scenario(mode, now, run_id):
         baseline = [telemetry(a, z, 100, now, label) for _, a, z, label, _, _ in zones]
         failures = [telemetry(a, z, gb, now + timedelta(seconds=5), label)
                     for _, a, z, label, gb, _ in zones]
-        reports = [ticket(run_id, group, idx, z, desc, label)
+        reports = [ticket(run_id, group, idx, z, desc, label, now)
                    for group, _, z, label, _, desc in zones
                    for idx in range(1, 16)]
         return [
@@ -96,7 +92,7 @@ def build_scenario(mode, now, run_id):
              [telemetry("ANT-EARLY-01", EARLY_ZONE, 55, now + timedelta(seconds=5),
                         "Zona IA temprana")]),
             ("3 reportes semanticos distintos", "ticket",
-             [ticket(run_id, "E", i, EARLY_ZONE, desc, "Zona de deteccion temprana")
+             [ticket(run_id, "E", i, EARLY_ZONE, desc, "Zona de deteccion temprana", now)
               for i, desc in enumerate(descriptions, 1)]),
         ]
 
@@ -110,41 +106,41 @@ def build_scenario(mode, now, run_id):
 
 
 def recurrent_items(now):
-    """Cuatro dias historicos anómalos y recuperacion entre fallas.
-
-    Se siembra DDB directamente para evitar reordenamientos en SQS standard
-    y asegurar que eval_recurrence vea cada EVENT#dia#timestamp.
-    """
     antenna = "ANT-REC-09"
+    geohash = encode_geohash(*RECURRENT_ZONE)
     items = []
     for days_ago in (6, 5, 4, 2):
         day = (now - timedelta(days=days_ago)).date()
         failed = datetime.combine(day, time(hour=10, tzinfo=timezone.utc))
         restored = failed + timedelta(minutes=45)
-        for dt, status, gb in (
-            (failed, "CAIDA", Decimal("43")),
-            (restored, "NORMAL", Decimal("100")),
-        ):
-            stamp = iso(dt)
-            items.append({
-                "PK": f"ANTENNA#{antenna}",
-                "SK": f"EVENT#{day.isoformat()}#{stamp}",
-                "health_status": status,
-                "traffic_gb": gb,
-                "geohash": encode_geohash(*RECURRENT_ZONE),
-                "updated_at": stamp,
-            })
-    # Las lecturas del ingestor parten de NORMAL antes de enviar la falla actual.
+        stamp_fail = iso(failed)
+        stamp_rec = iso(restored)
+        items.append({
+            "PK": f"ANTENNA#{antenna}",
+            "SK": f"EVENT#{day.isoformat()}#{stamp_fail}",
+            "GSI1PK": "FAILURES#ALL",
+            "GSI1SK": f"TS#{stamp_fail}",
+            "antenna_id": antenna,
+            "date_day": day.isoformat(),
+            "health_status": "CAIDA",
+            "traffic_gb": Decimal("43"),
+            "geohash": geohash,
+            "recovered_at": stamp_rec,
+            "duration_sec": 2700,
+            "updated_at": stamp_fail,
+        })
     current = {
         "PK": f"ANTENNA#{antenna}", "SK": "CURRENT",
         "antenna_id": antenna,
-        "geohash": encode_geohash(*RECURRENT_ZONE),
-        "GSI1PK": f"ZONA#{encode_geohash(*RECURRENT_ZONE)}",
+        "zone_name": "Zona de recurrencia estructural",
+        "geohash": geohash,
+        "GSI1PK": f"ZONA#{geohash}",
         "GSI1SK": f"ANTENNA#{antenna}",
         "lat": Decimal(str(RECURRENT_ZONE[0])),
         "lon": Decimal(str(RECURRENT_ZONE[1])),
         "last_traffic_gb": Decimal("100"),
         "health_status": "NORMAL",
+        "structural_risk": False,
         "updated_at": iso(now - timedelta(minutes=5)),
     }
     return items, current
@@ -194,13 +190,16 @@ def publish_sqs(client, queue_url, payloads):
                 time_module.sleep(.25 * 2 ** attempt)
         if pending:
             raise RuntimeError(f"SQS no acepto {len(pending)} mensajes despues de 3 intentos")
+        # Pausa entre lotes de 10 para mantener <= 2 Lambdas SQS concurrentes
+        if start + 10 < len(payloads):
+            time_module.sleep(1.5)
     return count
 
 
 def publish_http(base_url, kind, payloads):
     path = "/telemetria" if kind == "telemetry" else "/tickets"
+
     def send(body):
-        # En HTTP, el API genera el ticket_id. No reintentamos POST para no duplicar.
         if kind == "ticket":
             body = {k: v for k, v in body.items() if k != "ticket_id"}
         req = Request(
@@ -211,8 +210,11 @@ def publish_http(base_url, kind, payloads):
         with urlopen(req, timeout=15) as resp:
             if resp.status != 202:
                 raise RuntimeError(f"HTTP {resp.status} en {path}")
+        time_module.sleep(0.35)
         return 1
-    with ThreadPoolExecutor(max_workers=8) as executor:
+
+    # Maximo 2 workers para respetar throttling de API Gateway y limite <= 10 Lambdas
+    with ThreadPoolExecutor(max_workers=2) as executor:
         jobs = [executor.submit(send, body) for body in payloads]
         return sum(job.result() for job in as_completed(jobs))
 
@@ -220,7 +222,7 @@ def publish_http(base_url, kind, payloads):
 def seed_recurrence(dynamodb, now, dry_run):
     historic, current = recurrent_items(now)
     if dry_run:
-        print(f"[DRY-RUN] DynamoDB: {len(historic)} EVENT# (4 fallas + 4 recuperaciones) y 1 CURRENT")
+        print(f"[DRY-RUN] DynamoDB: {len(historic)} EVENT# y 1 CURRENT")
         return
     table = dynamodb.Table("TeleCorp_Operaciones")
     for item in historic:
@@ -246,7 +248,7 @@ def self_test():
     assert len(early[2][2]) == 3 and early[1][2][0]["traffic_gb_min"] < 60
     assert len({p["description"] for p in early[2][2]}) == 3
     historic, current = recurrent_items(now)
-    assert len(historic) == 8 and current["health_status"] == "NORMAL"
+    assert len(historic) == 4 and current["health_status"] == "NORMAL"
     assert len({p["SK"].split("#")[1] for p in historic if p["health_status"] == "CAIDA"}) == 4
     print("OK: pruebas locales de los cuatro modos y de la recurrencia")
 
@@ -259,7 +261,7 @@ def main():
     parser.add_argument("--transport", choices=("sqs", "http"), default="sqs")
     parser.add_argument("--api-url", help="URL base API Gateway, incluyendo /prod")
     parser.add_argument("--region", default="us-east-1")
-    parser.add_argument("--settle-seconds", type=float, default=5,
+    parser.add_argument("--settle-seconds", type=float, default=6,
                         help="Espera entre fases para que SQS y DynamoDB procesen datos")
     args = parser.parse_args()
     if args.self_test:

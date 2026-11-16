@@ -1,6 +1,6 @@
 # Módulo de Orquestación y Reglas de Negocio (`orquestacion/` — P2)
 
-Implementa el enrutamiento de eventos en **Amazon EventBridge**, la detección colectiva deduplicada en ventanas menores a $24\text{h}$, el análisis de recurrencia estructural, la priorización multi-cloud con **GCP Cloud Run**, la orquestación de respuesta mediante **AWS Step Functions** y el sistema de notificaciones omnicanal sobre **Amazon SNS**.
+Implementa el enrutamiento de eventos en **Amazon EventBridge**, la detección colectiva deduplicada en ventanas menores a $24\text{ h}$, el análisis de recurrencia estructural, la priorización multi-cloud con **Azure Container Apps** (`POST /ia/analizar`), la orquestación de respuesta mediante **AWS Step Functions** y el sistema de notificaciones omnicanal sobre **Amazon SNS**.
 
 ## 1. Arquitectura del Módulo P2
 
@@ -24,14 +24,14 @@ flowchart LR
 
     subgraph FLUJO_SFN ["Estados Internos Step Functions (STANDARD)"]
         direction TB
-        S1["1. P2.2: eval_recurrence.py\n[ACTIVO]"] --> S2["2. P2.3: enrich_and_score.py\n[ACTIVO]"]
+        S1["1. P2.2: eval_recurrence.py\n[ACTIVO]"] --> S2["2. P2.3: enrich_and_score.py\n[ACTIVO - Timeout 30s]"]
         S2 --> S3{"3. Choice: EvaluarCriticidad\n(CRITICA / ALTA / BAJA)"}
         S3 --> S4["4. SDK DynamoDB: ConfirmarIncidenteZonal\n[ACTIVO]"]
         S4 --> S5["5. P2.5: notify_users.py\n[ACTIVO]"]
     end
 
     SFN -.-> FLUJO_SFN
-    S2 <-->|"HTTPS POST + X-API-Key"| GCP["GCP Cloud Run\n(/ia/analizar: Gemini + OSM)"]
+    S2 <-->|"HTTPS POST + X-API-Key"| AZURE["Azure Container Apps (westus2)\n(/ia/analizar: Gemini + OSM)"]
     S2 & S4 & L_NOT <--> DDB_O
     S5 & L_NOT --> SNS["Amazon SNS\n(telecorp-alertas-zonales)"]
     S5 & L_NOT --> DDB_V
@@ -47,31 +47,31 @@ orquestacion/
 └── lambdas/
     ├── eval_collective.py       # Motor de detección colectiva < 24h (ACTIVO - P2.1)
     ├── eval_recurrence.py       # Detección de fallas estructurales multi-día (ACTIVO - P2.2)
-    ├── enrich_and_score.py      # Puente Multi-Cloud GCP /ia/analizar y score (ACTIVO - P2.3)
+    ├── enrich_and_score.py      # Puente Multi-Cloud Azure /ia/analizar y score (ACTIVO - P2.3)
     └── notify_users.py          # Envío de alertas omnicanal vía Amazon SNS por hito (ACTIVO - P2.5)
 ```
 
 ## 3. Dependencias Mínimas para P2.1 – P2.5
 
-Antes de desplegar los recursos del módulo P2, deben existir en `us-east-1` (creados en Fase 0 / P1.1):
+Antes de desplegar los recursos del módulo P2, deben existir en `us-east-1` (cuenta `390577088044`, creados en Fase 0 / P1.1):
 
-* **Rol IAM:** `LabRole` con permisos para Lambda, DynamoDB, SSM Parameter Store, Amazon SNS y AWS Step Functions.
+* **Rol IAM:** `LabRole` (`arn:aws:iam::390577088044:role/LabRole`) con permisos para Lambda, DynamoDB, SSM Parameter Store, Amazon SNS y AWS Step Functions.
 * **Bus EventBridge:** `telecorp-bus`
 * **Tablas DynamoDB:** `TeleCorp_VentanasZonales` (TTL: `expires_at`) y `TeleCorp_Operaciones` (GSI: `GSI1_ZonaEstado`)
 * **Tópico Amazon SNS:** `telecorp-alertas-zonales` con suscripciones `email` confirmadas para los integrantes del equipo (envía desde `no-reply@sns.amazonaws.com`).
-* **Parámetros SSM (`SecureString`):**
+* **Parámetros SSM (`SecureString` — los nombres con `/telecorp/gcp/*` se conservan por compatibilidad):**
   * `/telecorp/thresholds/collective_users` $\rightarrow$ `"10"`
   * `/telecorp/thresholds/window_hours` $\rightarrow$ `"24"`
   * `/telecorp/thresholds/recurrence_days` $\rightarrow$ `"3"`
-  * `/telecorp/gcp/endpoint_url` $\rightarrow$ URL de Google Cloud Run (o `"PENDIENTE_URL_CLOUD_RUN"` para operar en modo `FALLBACK_LOCAL`)
-  * `/telecorp/gcp/api_key` $\rightarrow$ `"TELECORP-SECRET-KEY-2026"`
-  * `/telecorp/sns/topic_arn` $\rightarrow$ ARN del tópico `telecorp-alertas-zonales` (reemplaza `/telecorp/ses/sender_email`)
+  * `/telecorp/gcp/endpoint_url` $\rightarrow$ `"https://telecorp-ia.ambitiouspebble-a4a0a323.westus2.azurecontainerapps.io"`
+  * `/telecorp/gcp/api_key` $\rightarrow$ `"5dff4dad49d1ed2c8d0bc9dc9fbf4cb3ffbb300531108ca6"`
+  * `/telecorp/sns/topic_arn` $\rightarrow$ ARN del tópico `telecorp-alertas-zonales` (`arn:aws:sns:us-east-1:390577088044:telecorp-alertas-zonales`)
 
 ## 4. Etapa Implementada: Detección Colectiva (`Tarea P2.1`)
 
 ### Reglas de Negocio (`lambdas/eval_collective.py`)
 
-1. **Deduplicación estricta ($< 24\text{h}$):** Inserta `PK=WIN#<geohash>`, `SK=USER#<user_id>` con `ConditionExpression="attribute_not_exists(PK) OR expires_at <= :now"`. Reportes repetidos del mismo usuario en menos de $24\text{h}$ no incrementan el contador.
+1. **Deduplicación estricta ($< 24\text{ h}$):** Inserta `PK=WIN#<geohash>`, `SK=USER#<user_id>` con `ConditionExpression="attribute_not_exists(PK) OR expires_at <= :now"`. Reportes repetidos del mismo usuario en menos de $24\text{ h}$ no incrementan el contador.
 2. **Contador atómico zonal:** Ante un usuario nuevo en la ventana vigente, ejecuta `ADD unique_users_count :inc` sobre `SK=COUNTER` (reiniciando atómicamente la ventana si `expires_at <= now`).
 3. **Condiciones de disparo hacia Step Functions:**
    * **`COLECTIVO_10`:** `unique_users_count` alcanza el umbral de SSM ($10$).
@@ -81,6 +81,7 @@ Antes de desplegar los recursos del módulo P2, deben existir en `us-east-1` (cr
 ### Despliegue AWS CLI
 
 ```bash
+export AWS_PAGER=""
 export AWS_DEFAULT_REGION=us-east-1
 export LAB_ROLE_ARN=$(aws iam get-role --role-name LabRole --query 'Role.Arn' --output text)
 
@@ -144,13 +145,14 @@ aws dynamodb get-item --table-name TeleCorp_VentanasZonales --key '{"PK":{"S":"W
 ### Reglas de Negocio (`lambdas/eval_recurrence.py`)
 
 1. **Ventana móvil multi-día ($7\text{ días}$):** Consulta en `TeleCorp_Operaciones` los eventos históricos `PK=ANTENNA#<id>`, `SK=EVENT#<YYYY-MM-DD>#<iso_ts>` dentro de los últimos $7\text{ días}$ calendario (`RECURRENCE_LOOKBACK_DAYS=7`).
-2. **Conteo de días distintos con recuperación aparente:** Filtra registros anómalos (`CAIDA` $<60\text{ GB/min}$, `SATURADA` $>129\text{ GB/min}$, `INHABILITADA` $=0\text{ GB/min}$), contabiliza **días calendario únicos (`YYYY-MM-DD`)** y detecta ciclos de recuperación intermedia (`recovered_at` o fallas en días previos distintos). Incluye salvaguarda ante condiciones de carrera si el evento `antena.anomalia` aún no terminó de escribir su `EVENT#` del día.
-3. **Marcado de riesgo estructural (`structural_risk`):** Si `distinct_failure_days_count >= 3` (leído desde SSM `/telecorp/thresholds/recurrence_days` con caché en memoria de $60\text{s}$), actualiza `structural_risk = true`, `recurrence_days_count` y `recent_failure_days` en `PK=ANTENNA#<id>`, `SK=CURRENT`.
+2. **Conteo de días distintos con recuperación aparente:** Filtra registros anómalos (`CAIDA` $< 60\text{ GB/min}$, `SATURADA` $> 129\text{ GB/min}$, `INHABILITADA` $= 0\text{ GB/min}$), contabiliza **días calendario únicos (`YYYY-MM-DD`)** y detecta ciclos de recuperación intermedia (`recovered_at` o fallas en días previos distintos). Incluye salvaguarda ante condiciones de carrera si el evento `antena.anomalia` aún no terminó de escribir su `EVENT#` del día.
+3. **Marcado de riesgo estructural (`structural_risk`):** Si `distinct_failure_days_count >= 3` (leído desde SSM `/telecorp/thresholds/recurrence_days` con caché en memoria de $60\text{ s}$), actualiza `structural_risk = true`, `recurrence_days_count` y `recent_failure_days` en `PK=ANTENNA#<id>`, `SK=CURRENT`.
 4. **Doble invocación y descubrimiento zonal por `geohash`:** Soporta tanto payloads directos desde **AWS Step Functions** como eventos `antena.anomalia` desde **EventBridge** (`event["detail"]`). Si el incidente nace solo de reportes ciudadanos sin `antenna_id`, consulta `GSI1_ZonaEstado` (`GSI1PK=ZONA#<geohash>`) y selecciona la antena de mayor riesgo.
 
 ### Despliegue AWS CLI
 
 ```bash
+export AWS_PAGER=""
 export AWS_DEFAULT_REGION=us-east-1
 export LAB_ROLE_ARN=$(aws iam get-role --role-name LabRole --query 'Role.Arn' --output text)
 
@@ -245,15 +247,15 @@ cat response_p2_2.json
 # "recent_failure_days": ["2026-11-10", "2026-11-12", "2026-11-14"]
 ```
 
-## 6. Etapa Implementada: Puente Multi-Cloud AWS $\rightarrow$ GCP y Priorización (`Tarea P2.3`)
+## 6. Etapa Implementada: Puente Multi-Cloud AWS $\rightarrow$ Azure Container Apps y Priorización (`Tarea P2.3`)
 
 ### Reglas de Negocio (`lambdas/enrich_and_score.py`)
 
-1. **Puente Multi-Cloud AWS $\rightarrow$ GCP con Caché SSM:** Lee `/telecorp/gcp/endpoint_url` y `/telecorp/gcp/api_key` (`SecureString`) desde SSM Parameter Store con caché en memoria de $60\text{s}$ y normaliza automáticamente el sufijo `/ia/analizar`. Invoca `POST /ia/analizar` en Google Cloud Run mediante `urllib.request` con cabecera `X-API-Key` y `timeout=8.0s` (sin dependencias externas para empaquetado `.zip` puro).
-2. **Tolerancia a Fallos (`FALLBACK_LOCAL`):** Si GCP Cloud Run aún no está desplegado (`PENDIENTE_URL_CLOUD_RUN`) o sufre latencia, ejecuta un motor heurístico local determinista (detección contextual de hospitales/escuelas/industrias y clasificación semántica base) para evitar que AWS Step Functions se interrumpa.
+1. **Puente Multi-Cloud AWS $\rightarrow$ Azure Container Apps con Caché SSM:** Lee `/telecorp/gcp/endpoint_url` (`https://telecorp-ia.ambitiouspebble-a4a0a323.westus2.azurecontainerapps.io`) y `/telecorp/gcp/api_key` (`SecureString`) desde SSM Parameter Store con caché en memoria de $60\text{ s}$ y normaliza automáticamente el sufijo `/ia/analizar`. Invoca `POST {endpoint_url}/ia/analizar` en **Azure Container Apps** mediante `urllib.request` con cabeceras `Content-Type: application/json` y `X-API-Key`, usando `timeout=8.0s` con $1$ reintento (y *timeout* de Lambda configurado en $30\text{ s}$ para tolerar el *cold start* del contenedor).
+2. **Tolerancia a Fallos (`FALLBACK_LOCAL`):** Si el servicio remoto en Azure no responde tras el reintento o sufre latencia extrema, ejecuta un motor heurístico local determinista (detección contextual de hospitales/escuelas/industrias y clasificación semántica base) para evitar que AWS Step Functions se interrumpa.
 3. **Cálculo de Prioridad Operativa (`priority_score`):** Aplica la fórmula unificada de criticidad:
    $$\text{Score} = (\text{Usuarios\_Afectados} \times 10) \times \text{Multiplicador\_Zona\_Crítica} + \text{Bonus\_Antena} + \text{Bonus\_Recurrencia}$$
-   * $\text{Bonus\_Antena}$: $+40\text{ pts}$ si está `CAIDA` ($<60\text{ GB/min}$) o `INHABILITADA` ($0\text{ GB/min}$), $+25\text{ pts}$ si está `SATURADA` ($>129\text{ GB/min}$), y $0\text{ pts}$ si está `NORMAL`.
+   * $\text{Bonus\_Antena}$: $+40\text{ pts}$ si está `CAIDA` ($< 60\text{ GB/min}$) o `INHABILITADA` ($= 0\text{ GB/min}$), $+25\text{ pts}$ si está `SATURADA` ($> 129\text{ GB/min}$), y $0\text{ pts}$ si está `NORMAL`.
    * $\text{Bonus\_Recurrencia}$: $+35\text{ pts}$ si existe alerta estructural recurrente ($\ge 3$ días distintos).
    * **Niveles:** `CRITICA` ($\ge 150$), `ALTA` ($\ge 80$), `MEDIA` ($\ge 40$) o `BAJA` ($< 40$).
 4. **Persistencia de Incidente Maestro y Propagación a Tickets:** Ejecuta `UpdateItem` en `PK=INCIDENT#<incident_id>`, `SK=META` con `GSI1PK="ACTIVE#true"` y `GSI1SK="SCORE#<00000>"` (preservando `affected_users_count` mediante `if_not_exists` ante tormentas concurrentes) y propaga `ai_category`, `priority_score` y `priority_level` a los tickets vinculados.
@@ -261,10 +263,11 @@ cat response_p2_2.json
 ### Despliegue AWS CLI
 
 ```bash
+export AWS_PAGER=""
 export AWS_DEFAULT_REGION=us-east-1
 export LAB_ROLE_ARN=$(aws iam get-role --role-name LabRole --query 'Role.Arn' --output text)
 
-# 1. Empaquetar y desplegar Lambda enrich_and_score
+# 1. Empaquetar y desplegar Lambda enrich_and_score (timeout 30s para Azure cold start + reintento)
 cd orquestacion/lambdas
 zip enrich_and_score.zip enrich_and_score.py
 
@@ -274,7 +277,7 @@ aws lambda create-function \
   --role "$LAB_ROLE_ARN" \
   --handler enrich_and_score.lambda_handler \
   --zip-file fileb://enrich_and_score.zip \
-  --timeout 20 \
+  --timeout 30 \
   --memory-size 256 \
   --environment "Variables={TABLA_OPERACIONES=TeleCorp_Operaciones,SSM_GCP_URL_PARAM=/telecorp/gcp/endpoint_url,SSM_GCP_KEY_PARAM=/telecorp/gcp/api_key,GCP_TIMEOUT_SEC=8.0}"
 ```
@@ -322,17 +325,18 @@ aws dynamodb get-item \
 1. **Orquestación Visual `STANDARD` (`TeleCorpSentinelWorkflow`):** Ejecuta de extremo a extremo la cadena de correlación y respuesta automatizada sin intervención manual, permitiendo auditar cada transición en tiempo real desde la consola de AWS Step Functions.
 2. **Correlación y Enriquecimiento Multi-Cloud:**
    * `VerificarInfraestructuraYRecurrencia`: Invoca `telecorp-eval-recurrence` (P2.2) con reintentos exponenciales (`MaxAttempts: 3`) y bloque `Catch` hacia `FallbackRecurrencia`.
-   * `AnalizarConIAYGeoespacialGCP`: Envía el contexto zonal y el historial de fallas de antena hacia `telecorp-enrich-and-score` (P2.3) para consultar **GCP Cloud Run** (Gemini + OpenStreetMap Overpass), con respaldo `FallbackPriorizacionLocal` en caso de latencia extrema.
+   * `AnalizarConIAYGeoespacialGCP`: Envía el contexto zonal y el historial de fallas de antena hacia `telecorp-enrich-and-score` (P2.3) para consultar **Azure Container Apps** (`/ia/analizar`: Gemini + OpenStreetMap Overpass), con respaldo `FallbackPriorizacionLocal` en caso de latencia extrema.
 3. **Enrutamiento Inteligente por Criticidad (`EvaluarCriticidad` — `Choice`):**
-   * **`CRITICA` ($\ge 150\text{ pts}$):** Despacha sin demora ($0\text{s}$) a `PrepararAtencionInmediata` asignando `status = "Siendo atendida"` y `dispatch_mode = "INMEDIATO_CRITICO"`.
+   * **`CRITICA` ($\ge 150\text{ pts}$):** Despacha sin demora ($0\text{ s}$) a `PrepararAtencionInmediata` asignando `status = "Siendo atendida"` y `dispatch_mode = "INMEDIATO_CRITICO"`.
    * **`ALTA`, `MEDIA` o Detección Temprana IA (`early_anomaly_detected == true`):** Enruta inmediatamente a `PrepararRevisionPrioritaria` asignando `status = "En revisión"` y `dispatch_mode = "ESTANDAR_PRIORIZADO"`.
-   * **`BAJA` ($< 40\text{ pts}$):** Pasa por una ventana breve de confirmación (`EsperarConfirmacionPersistencia` de $15\text{s}$) antes de escalar a revisión.
+   * **`BAJA` ($< 40\text{ pts}$):** Pasa por una ventana breve de confirmación (`EsperarConfirmacionPersistencia` de $15\text{ s}$) antes de escalar a revisión.
 4. **Confirmación Nativa en DynamoDB (`ConfirmarIncidenteZonal`):** Utiliza integración directa AWS SDK (`arn:aws:states:::dynamodb:updateItem`) para actualizar `status`, `dispatch_mode`, `confirmed_at` y `workflow_execution_id` en `PK=INCIDENT#<incident_id>`, `SK=META` sin incurrir en costos de una función Lambda intermedia.
 5. **Disparo de Notificaciones Omnicanal (`NotificarUsuariosAfectados`):** Invoca `telecorp-notify-users` (P2.5) enviando el hito `INCIDENCIA_IDENTIFICADA` (o `EN_EVALUACION`) junto con el diagnóstico IA y puntos críticos cercanos para su difusión vía **Amazon SNS** (`no-reply@sns.amazonaws.com`), contando con `FallbackNotificacionDegradada` para garantizar que la máquina finalice siempre en `SUCCEEDED`.
 
 ### Despliegue AWS CLI
 
 ```bash
+export AWS_PAGER=""
 export AWS_DEFAULT_REGION=us-east-1
 export ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
 export LAB_ROLE_ARN=$(aws iam get-role --role-name LabRole --query 'Role.Arn' --output text)
@@ -402,7 +406,7 @@ aws dynamodb get-item \
    * **`EN_EVALUACION`** (`status == "En revisión"`): Informa al usuario que su reporte está siendo correlacionado con la telemetría de red.
    * **`INCIDENCIA_IDENTIFICADA`** (`status == "Siendo atendida"`): Confirma afectación colectiva/zonal, nivel de prioridad, puntos críticos cercanos y diagnóstico IA.
    * **`SERVICIO_RESTABLECIDO`** (`status == "Solucionada"` o evento `incidente.solucionado` vía EventBridge): Confirma la normalización del servicio y la acción técnica ejecutada.
-2. **Difusión Consolidada por Amazon SNS + SSM:** Lee `/telecorp/sns/topic_arn` (`SecureString`) desde SSM Parameter Store con caché en memoria de $60\text{s}$ y realiza **1 publicación consolidada por incidente/hito** hacia `telecorp-alertas-zonales` (remitente `no-reply@sns.amazonaws.com` con `MessageAttributes` de `geohash`, `milestone` y `priority_level`), evitando spam de correos idénticos durante tormentas de reportes.
+2. **Difusión Consolidada por Amazon SNS + SSM:** Lee `/telecorp/sns/topic_arn` (`SecureString`) desde SSM Parameter Store con caché en memoria de $60\text{ s}$ y realiza **1 publicación consolidada por incidente/hito** hacia `telecorp-alertas-zonales` (remitente `no-reply@sns.amazonaws.com` con `MessageAttributes` de `geohash`, `milestone` y `priority_level`), evitando spam de correos idénticos durante tormentas de reportes.
 3. **Canal SMS Resiliente para AWS Academy:** Genera la notificación breve para cada teléfono único afectado; por defecto (`ENABLE_DIRECT_SMS=false`) opera en modo seguro `SIMULATED_SMS_ACADEMY` para evitar bloqueos del Sandbox SMS en Learner Lab, soportando activación directa (`ENABLE_DIRECT_SMS=true`) con fallback automático.
 4. **Cierre en Cascada al Restablecer Servicio:** Al recibir `SERVICIO_RESTABLECIDO`, actualiza de forma idempotente en `TeleCorp_Operaciones` el `IncidenteMaestro` (`status = "Solucionada"`, `GSI1PK = "ACTIVE#false"`, `closed_at`) y todos sus tickets hermanos abiertos con registro `HIST#`.
 5. **Auditoría Individual Omnicanal:** Persiste en `TeleCorp_VentanasZonales` un registro por cada usuario y canal afectado (`PK=TICKET#<id>`, `SK=NOTIF#<iso_ts>#EMAIL` y `SK=NOTIF#<iso_ts>#SMS`, con `GSI1PK=INCIDENT#<incident_id>`).
@@ -410,6 +414,7 @@ aws dynamodb get-item \
 ### Despliegue AWS CLI
 
 ```bash
+export AWS_PAGER=""
 export AWS_DEFAULT_REGION=us-east-1
 export LAB_ROLE_ARN=$(aws iam get-role --role-name LabRole --query 'Role.Arn' --output text)
 
@@ -525,7 +530,7 @@ aws dynamodb query \
 | :--- | :--- | :--- |
 | **P2.1** — Reglas EventBridge + Detección Colectiva | `eventbridge_rules.json` + `eval_collective.py` | **Completado** |
 | **P2.2** — Motor de Recurrencia Estructural | `eventbridge_rules.json` + `eval_recurrence.py` | **Completado** |
-| **P2.3** — Puente Multi-Cloud AWS $\rightarrow$ GCP + Score | `lambdas/enrich_and_score.py` | **Completado** |
+| **P2.3** — Puente Multi-Cloud AWS $\rightarrow$ Azure + Score | `lambdas/enrich_and_score.py` | **Completado** |
 | **P2.4** — Máquina de Estados AWS Step Functions | `state_machine.asl.json` (`TeleCorpSentinelWorkflow`) | **Completado** |
 | **P2.5** — Sistema de Notificaciones Omnicanal (SNS) | `eventbridge_rules.json` + `lambdas/notify_users.py` | **Completado** |
 
@@ -534,16 +539,13 @@ aws dynamodb query \
 Los contratos congelados (`dynamodb_schemas.json`, `eventbridge_events.json`, `openapi.yaml`) **no cambian**; consideren estos puntos operativos al integrar:
 
 * **Para P1 (Datos e Ingesta):**
-  * **Parámetro SSM de Notificaciones:** En `setup_aws.sh`, reemplazar `/telecorp/ses/sender_email` por `/telecorp/sns/topic_arn` (`SecureString`) apuntando al tópico `telecorp-alertas-zonales`.
-  * **Geohash de precisión 6:** `ingest_ticket.py` e `ingest_telemetry.py` deben calcular `geohash` con exactamente **6 caracteres** para cruzar reportes con antenas.
-  * **Índice `GSI1_ZonaEstado`:** Al guardar `ANTENNA#<id>` (`SK=CURRENT`) en `TeleCorp_Operaciones`, llenar `GSI1PK="ZONA#<geohash>"` y `GSI1SK="ANTENNA#<id>"` con `health_status` válido (`NORMAL`, `CAIDA`, `SATURADA`, `INHABILITADA`).
-  * **Historial de fallas de antena (`EVENT#`):** Cuando `ingest_telemetry.py` (o `storm_simulator.py --mode recurrent`) detecte un estado anómalo (`CAIDA`, `SATURADA`, `INHABILITADA`), debe insertar `PK="ANTENNA#<id>"`, `SK="EVENT#<YYYY-MM-DD>#<iso_ts>"` con `date_day`, `health_status` y `traffic_gb`; cuando la antena regrese a `NORMAL` ($60\text{–}129\text{ GB/min}$), actualizar `recovered_at` y `duration_sec`.
-  * **Publicación de `incidente.solucionado`:** En `PATCH /tickets/{ticket_id}/estado`, cuando `new_status == "Solucionada"`, publicar el evento `incidente.solucionado` (`Source: "telecorp.operaciones"`) en `telecorp-bus` incluyendo `incident_id` (`master_incident_id`), `ticket_id`, `geohash`, `new_status`, `changed_by` y `note`. `notify_users.py` se encargará automáticamente de notificar el restablecimiento y cerrar en cascada el `IncidenteMaestro` (`GSI1PK="ACTIVE#false"`) y sus tickets hermanos.
-  * **Bus `telecorp-bus`:** Publicar `incidencia.creada` y `antena.anomalia` con `geohash`, `lat`, `lon` y `timestamp`. No creen reglas duplicadas (`telecorp-collective-rule`, `telecorp-recurrence-rule` y `telecorp-incident-resolved-rule` ya están configuradas).
-* **Para P3 (Frontend & IA GCP):**
+  * **Control de Concurrencia ($\le 10$ Lambdas):** Mantener `MaximumConcurrency=2` y `BatchSize=10` en las 3 colas SQS, deduplicación intra-lote y espaciado de $0.25\text{ s}$ hacia EventBridge en `ingest_ticket.py` e `ingest_telemetry.py`, y *throttling* (`burstLimit=2`, `rateLimit=3`) en API Gateway.
+  * **Parámetro SSM de Notificaciones:** En `setup_aws.sh`, usar `/telecorp/sns/topic_arn` (`SecureString`) apuntando al tópico `telecorp-alertas-zonales`.
+  * **Geohash de precisión 6:** `ingest_ticket.py` e `ingest_telemetry.py` calculan `geohash` con exactamente **6 caracteres** para cruzar reportes con antenas.
+  * **Índice `GSI1_ZonaEstado` e Historial `EVENT#`:** Al guardar `ANTENNA#<id>` (`SK=CURRENT`) en `TeleCorp_Operaciones`, llenar `GSI1PK="ZONA#<geohash>"` y `GSI1SK="ANTENNA#<id>"`. Ante estados anómalos (`CAIDA`, `SATURADA`, `INHABILITADA`), insertar `PK="ANTENNA#<id>"`, `SK="EVENT#<YYYY-MM-DD>#<iso_ts>"` con `date_day`, `health_status` y `traffic_gb`; al volver a `NORMAL` ($60\text{--}129\text{ GB/min}$), actualizar `recovered_at` y `duration_sec`.
+  * **Endpoints REST completos en `api_crud.py`:** Incluye `GET /incidentes`, `PATCH /incidentes/{incident_id}/estado` (cierre en cascada), `GET /antenas` y `incident_time` en `POST/GET /tickets`, además de emitir `incidente.solucionado` (`Source: "telecorp.operaciones"`) en `telecorp-bus` al marcar `"Solucionada"`.
+* **Para P3 (Frontend SPA & IA Azure Container Apps):**
+  * **Microservicio IA en Azure Container Apps (`westus2`):** Activo en `https://telecorp-ia.ambitiouspebble-a4a0a323.westus2.azurecontainerapps.io` (`POST /ia/analizar` con `X-API-Key`). Los parámetros SSM `/telecorp/gcp/endpoint_url` y `/telecorp/gcp/api_key` conservan su nombre para mantener compatibilidad sin cambios de configuración.
   * **Confirmación de Suscripción SNS:** Confirmar el enlace de suscripción al tópico `telecorp-alertas-zonales` enviado desde `no-reply@sns.amazonaws.com` para recibir en vivo las alertas durante la grabación del pitch.
-  * **Coordenadas obligatorias:** `POST /tickets` debe enviar siempre `lat` y `lon` numéricos desde el portal para calcular la zona.
-  * **Configuración de URL Cloud Run en SSM:** Al desplegar el microservicio FastAPI en GCP, actualizar `/telecorp/gcp/endpoint_url` en SSM Parameter Store (con o sin `/ia/analizar`; `enrich_and_score.py` normaliza la ruta automáticamente y cambia de `FALLBACK_LOCAL` a `GCP_GEMINI_OSM` en $\le 60\text{s}$).
-  * **Contexto enriquecido para Gemini:** Cada texto en `descriptions` hacia `POST /ia/analizar` llegará con el prefijo `"[TIPO_PROBLEMA] descripción"`.
-  * **Contrato de recurrencia hacia `POST /ia/analizar`:** `eval_recurrence.py` entrega `antenna_id`, `antenna_traffic_gb`, `structural_risk` (`boolean`) y `recent_failure_days` (`["YYYY-MM-DD", ...]`) listos para ser enviados al endpoint de GCP.
-  * **Campos, estados y auditoría de notificaciones para el Dashboard NOC y Portal Usuario:** Cada `INCIDENT#<id>` incluye `critical_pois`, `priority_score`, `priority_level`, `ai_diagnosis`, `structural_recurrence_alert`, `ai_source`, `dispatch_mode` y `workflow_execution_id`; los tickets vinculados reciben `ai_category`, `priority_score` y `priority_level`; y la auditoría omnicanal queda en `TeleCorp_VentanasZonales` bajo `PK=TICKET#<id>`, `SK=NOTIF#<iso_ts>#<channel>` con estados `SENT_SNS` (Email) y `SIMULATED_SMS_ACADEMY` (SMS). Asegurar que el frontend reconozca tanto `"En revisión"` como `"Siendo atendida"` como estados activos en curso y habilite el botón **"Marcar como Solucionada"** en ambos casos.
+  * **Compilación Vite/React (`HashRouter`) para S3:** Antes de subir `frontend/dist/` a S3, generar `.env.production` con `VITE_API_BASE_URL` (sin `/` final) y `VITE_MOCK=false`, ejecutar `npm run build` y sincronizar hacia `s3://telecorp-sentinel-portal-390577088044/`.
+  * **Campos, estados y auditoría en NOC y Portal:** Cada `INCIDENT#<id>` incluye `critical_pois`, `priority_score`, `priority_level`, `ai_diagnosis`, `structural_recurrence_alert`, `ai_source`, `dispatch_mode`, `workflow_execution_id` y `ticket_ids`; los tickets vinculados reciben `ai_category`, `priority_score` y `priority_level`; y la auditoría omnicanal queda en `TeleCorp_VentanasZonales` bajo `PK=TICKET#<id>`, `SK=NOTIF#<iso_ts>#<channel>` con estados `SENT_SNS` (Email) y `SIMULATED_SMS_ACADEMY` (SMS).

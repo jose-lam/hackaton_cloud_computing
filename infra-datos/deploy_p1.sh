@@ -23,9 +23,11 @@ for name in ['api_crud', 'ingest_telemetry', 'ingest_ticket', 'ingest_logs']:
     path = root / 'lambdas' / (name + '.py')
     ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
     print('Python OK:', path.name)
-path = root / 'storm_simulator.py'
-ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
-print('Python OK:', path.name)
+sim_path = root / 'simulator' / 'storm_simulator.py'
+if not sim_path.exists():
+    sim_path = root / 'storm_simulator.py'
+ast.parse(sim_path.read_text(encoding='utf-8'), filename=str(sim_path))
+print('Python OK:', sim_path.name)
 PY
   if grep -Fq 'if [[ "$ACCOUNT" != "553662839025" ]]' "$ROOT/setup_aws.sh"; then
     fail 'setup_aws.sh conserva validación fija de la cuenta anterior'
@@ -69,24 +71,30 @@ lambda_upsert() {
 }
 
 ensure_mapping() {
-  local queue="$1" fn="$2" batch="$3" partial="$4" url arn uuid
+  local queue="$1" fn="$2" batch="$3" max_conc="$4" window_sec="$5"
+  local url arn uuid
   url="$(aws sqs get-queue-url --queue-name "$queue" --query QueueUrl --output text)"
   arn="$(aws sqs get-queue-attributes --queue-url "$url" --attribute-names QueueArn --query Attributes.QueueArn --output text)"
   uuid="$(aws lambda list-event-source-mappings --function-name "$fn" --event-source-arn "$arn" \
     --query 'EventSourceMappings[0].UUID' --output text)"
   if [[ "$uuid" == None || -z "$uuid" ]]; then
-    if [[ "$partial" == true ]]; then
-      aws lambda create-event-source-mapping --function-name "$fn" --event-source-arn "$arn" \
-        --batch-size "$batch" --function-response-types ReportBatchItemFailures >/dev/null
-    else
-      aws lambda create-event-source-mapping --function-name "$fn" --event-source-arn "$arn" \
-        --batch-size "$batch" >/dev/null
-    fi
+    aws lambda create-event-source-mapping \
+      --function-name "$fn" \
+      --event-source-arn "$arn" \
+      --batch-size "$batch" \
+      --maximum-batching-window-in-seconds "$window_sec" \
+      --scaling-config "{\"MaximumConcurrency\":$max_conc}" \
+      --function-response-types ReportBatchItemFailures >/dev/null
+    echo "SQS enlazada (MaxConcurrency=$max_conc, Batch=$batch): $queue -> $fn"
   else
-    # No modifica configuraciones existentes de mappings creados por otros integrantes.
-    echo "Event source mapping existente: $fn <- $queue ($uuid)"
+    aws lambda update-event-source-mapping \
+      --uuid "$uuid" \
+      --batch-size "$batch" \
+      --maximum-batching-window-in-seconds "$window_sec" \
+      --scaling-config "{\"MaximumConcurrency\":$max_conc}" \
+      --function-response-types ReportBatchItemFailures >/dev/null
+    echo "Event source mapping actualizado (MaxConcurrency=$max_conc, Batch=$batch): $fn <- $queue ($uuid)"
   fi
-  echo "SQS enlazada: $queue -> $fn"
 }
 
 ensure_api() {
@@ -109,8 +117,6 @@ ensure_api() {
       --parent-id "$root_id" --path-part '{proxy+}' --query id --output text)"
   fi
 
-  # IAM por defecto. Un acceso sin auth solo puede habilitarse de forma explícita
-  # para demos con datos totalmente ficticios.
   auth=AWS_IAM
   if [[ "${P1_PUBLIC_DEMO:-false}" == true ]]; then
     auth=NONE
@@ -126,7 +132,6 @@ ensure_api() {
       --http-method ANY --patch-operations "op=replace,path=/authorizationType,value=$auth" >/dev/null
   fi
 
-  # CORS preflight siempre debe quedar sin autenticación para navegadores.
   if ! aws apigateway get-method --rest-api-id "$api_id" --resource-id "$proxy_id" \
       --http-method OPTIONS >/dev/null 2>&1; then
     aws apigateway put-method --rest-api-id "$api_id" --resource-id "$proxy_id" \
@@ -145,8 +150,6 @@ ensure_api() {
   local statement='AllowTeleCorpApiGatewayProxy'
   if ! aws lambda get-policy --function-name telecorp-api-crud --query Policy \
       --output text 2>/dev/null | grep -Fq "\"Sid\": \"$statement\""; then
-    # AWS CLI generalmente devuelve JSON con espacios; si el statement ya existe,
-    # la comprobación siguiente evita tratar el conflicto como fallo fatal.
     if ! aws lambda add-permission --function-name telecorp-api-crud \
        --statement-id "$statement" --action lambda:InvokeFunction \
        --principal apigateway.amazonaws.com \
@@ -159,8 +162,15 @@ ensure_api() {
 
   aws apigateway create-deployment --rest-api-id "$api_id" \
     --stage-name "$API_STAGE" --description 'P1 TeleCorp API' >/dev/null
+
+  # Limitar rafagas HTTP en el stage para no superar 10 Lambdas simultaneas
+  aws apigateway update-stage --rest-api-id "$api_id" --stage-name "$API_STAGE" \
+    --patch-operations \
+      op=replace,path=/*/*/throttling/burstLimit,value=2 \
+      op=replace,path=/*/*/throttling/rateLimit,value=3 >/dev/null
+
   printf '\nAPI_URL=https://%s.execute-api.%s.amazonaws.com/%s\n' "$api_id" "$REGION" "$API_STAGE"
-  echo "Autorizacion: $auth. GET /tickets, PATCH /tickets/{ticket_id}/estado y analytics comparten la misma seguridad."
+  echo "Autorizacion: $auth. Throttling stage: burst=2, rate=3 req/s."
 }
 
 case "$ACTION" in
@@ -179,19 +189,19 @@ case "$ACTION" in
     lambda_upsert ingest_ticket telecorp-ingest-ticket 30
     lambda_upsert ingest_logs telecorp-ingest-logs 30
     lambda_upsert api_crud telecorp-api-crud 30
-    say 'Enlazando colas a Lambdas'
-    ensure_mapping telecorp-telemetry-q telecorp-ingest-telemetry 1 false
-    ensure_mapping telecorp-tickets-q telecorp-ingest-ticket 1 false
-    ensure_mapping telecorp-logs-q telecorp-ingest-logs 10 true
+    say 'Enlazando colas a Lambdas (MaxConcurrency=2, Batch=10)'
+    ensure_mapping telecorp-telemetry-q telecorp-ingest-telemetry 10 2 3
+    ensure_mapping telecorp-tickets-q telecorp-ingest-ticket 10 2 3
+    ensure_mapping telecorp-logs-q telecorp-ingest-logs 10 2 5
     say 'Configurando API Gateway REST + Lambda proxy'
     ensure_api
-    say 'Despliegue P1 listo; faltan pruebas reales y la integracion P2/P3.'
+    say 'Despliegue P1 listo y blindado <= 10 Lambdas.'
     ;;
   smoke)
     check_account
     TMP_DIR="$(mktemp -d)"
     trap 'rm -rf "$TMP_DIR"' EXIT
-    say 'Smoke tests de las seis rutas de la API (sin escrituras)'
+    say 'Smoke tests de las rutas de la API (sin escrituras)'
     invoke_case() {
       local label="$1" expected="$2" payload="$3" actual
       aws lambda invoke --function-name telecorp-api-crud \
@@ -216,8 +226,10 @@ PYSMOKE
     invoke_case 'POST /logs (validacion 400)' 400 '{"httpMethod":"POST","path":"/logs","body":"{}"}'
     invoke_case 'GET /tickets (sin resultados)' 200 '{"httpMethod":"GET","path":"/tickets","queryStringParameters":{"ticket_id":"TCK-NOEXISTE-SMOKE"}}'
     invoke_case 'PATCH /tickets/{id}/estado (validacion 400)' 400 '{"httpMethod":"PATCH","path":"/tickets/TCK-NOEXISTE-SMOKE/estado","body":"{\"new_status\":\"INVALIDO\"}"}'
+    invoke_case 'GET /incidentes' 200 '{"httpMethod":"GET","path":"/incidentes"}'
+    invoke_case 'GET /antenas' 200 '{"httpMethod":"GET","path":"/antenas"}'
     invoke_case 'GET /analytics/resumen' 200 '{"httpMethod":"GET","path":"/analytics/resumen"}'
-    say 'Smoke test de rutas terminado. No prueba escritura, procesamiento SQS ni P2.'
+    say 'Smoke test de rutas terminado.'
     ;;
   *)
     echo "Uso: bash infra-datos/deploy_p1.sh [check|deploy|smoke]" >&2
