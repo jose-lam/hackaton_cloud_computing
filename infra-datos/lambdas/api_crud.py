@@ -24,6 +24,12 @@ def now_utc():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _json_default(x):
+    if isinstance(x, Decimal):
+        return int(x) if x % 1 == 0 else float(x)
+    return str(x)
+
+
 def response(status, body):
     return {
         "statusCode": status,
@@ -33,11 +39,7 @@ def response(status, body):
             "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Amz-Date,X-Amz-Security-Token,X-Api-Key",
             "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS",
         },
-        "body": json.dumps(
-            body,
-            ensure_ascii=False,
-            default=lambda x: float(x) if isinstance(x, Decimal) else str(x),
-        ),
+        "body": json.dumps(body, ensure_ascii=False, default=_json_default),
     }
 
 
@@ -65,7 +67,6 @@ def encode_geohash(lat, lon, precision=6):
 
 
 def scan_all():
-    """Recorre páginas de DynamoDB; apropiado para un dataset pequeño de demo."""
     items = []
     kwargs = {}
     while True:
@@ -84,6 +85,69 @@ def as_utc(value):
         return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
     except ValueError:
         return None
+
+
+def get_incidentes():
+    records = scan_all()
+    incidents = [x for x in records if x.get("PK", "").startswith("INCIDENT#") and x.get("SK") == "META"]
+    tickets = [x for x in records if x.get("PK", "").startswith("TICKET#") and x.get("SK") == "META"]
+
+    tickets_by_inc = {}
+    for t in tickets:
+        mid = t.get("master_incident_id")
+        if mid:
+            tid = t.get("ticket_id") or t["PK"].removeprefix("TICKET#")
+            tickets_by_inc.setdefault(mid, []).append(tid)
+
+    items = []
+    for inc in incidents:
+        iid = inc.get("incident_id") or inc["PK"].removeprefix("INCIDENT#")
+        linked = inc.get("ticket_ids") or tickets_by_inc.get(iid, [])
+        entry = {
+            "incident_id": iid,
+            "geohash": inc.get("geohash", ""),
+            "zone_name": inc.get("zone_name") or f"Zona {inc.get('geohash', '')}",
+            "trigger_type": inc.get("trigger_type", "COLECTIVO_10"),
+            "affected_users_count": int(inc.get("affected_users_count") or len(linked)),
+            "critical_pois": inc.get("critical_pois", []),
+            "priority_score": inc.get("priority_score", Decimal(0)),
+            "priority_level": inc.get("priority_level", "MEDIA"),
+            "status": inc.get("status", "En revisión"),
+            "ai_diagnosis": inc.get("ai_diagnosis") or inc.get("ai_executive_diagnosis") or "",
+            "created_at": inc.get("created_at", ""),
+            "closed_at": inc.get("closed_at"),
+            "ticket_ids": linked,
+        }
+        if inc.get("antenna_id"):
+            entry["antenna_id"] = inc["antenna_id"]
+        conf = inc.get("ai_confidence") if inc.get("ai_confidence") is not None else inc.get("semantic_cluster_confidence")
+        if conf is not None:
+            entry["ai_confidence"] = conf
+        items.append(entry)
+
+    items.sort(key=lambda x: (float(x.get("priority_score") or 0), x.get("created_at", "")), reverse=True)
+    return response(200, {"items": items})
+
+
+def get_antenas():
+    records = scan_all()
+    antennas = [x for x in records if x.get("PK", "").startswith("ANTENNA#") and x.get("SK") == "CURRENT"]
+    items = []
+    for ant in antennas:
+        aid = ant.get("antenna_id") or ant["PK"].removeprefix("ANTENNA#")
+        items.append({
+            "antenna_id": aid,
+            "zone_name": ant.get("zone_name") or f"Zona {ant.get('geohash', '')}",
+            "lat": ant.get("lat"),
+            "lon": ant.get("lon"),
+            "geohash": ant.get("geohash", ""),
+            "last_traffic_gb": ant.get("last_traffic_gb", Decimal(0)),
+            "health_status": ant.get("health_status", "NORMAL"),
+            "updated_at": ant.get("updated_at", ""),
+            "structural_risk": bool(ant.get("structural_risk", False)),
+        })
+    items.sort(key=lambda x: (x["health_status"] == "NORMAL", not x["structural_risk"], x["antenna_id"]))
+    return response(200, {"items": items})
 
 
 def make_analytics():
@@ -177,8 +241,6 @@ def get_tickets(params):
     ticket_id = params.get("ticket_id")
     user_id = params.get("user_id")
     geohash = params.get("geohash")
-    if not (ticket_id or user_id or geohash):
-        return response(400, {"error": "Se requiere ticket_id, user_id o geohash"})
 
     if ticket_id:
         item = table.get_item(
@@ -187,7 +249,6 @@ def get_tickets(params):
         ).get("Item")
         tickets = [item] if item else []
     else:
-        # Para la demo; en producción consultar índices específicos por usuario/zona.
         tickets = [
             x for x in scan_all()
             if x.get("PK", "").startswith("TICKET#") and x.get("SK") == "META"
@@ -203,6 +264,7 @@ def get_tickets(params):
             ConsistentRead=True,
         )["Items"]
         obj = dict(item)
+        obj.setdefault("incident_time", item.get("created_at", ""))
         obj["history"] = [
             {
                 "old_status": h.get("old_status"),
@@ -215,6 +277,30 @@ def get_tickets(params):
         ]
         result.append(obj)
     return response(200, {"items": result})
+
+
+def _update_ticket_item(item, new_status, changed_by, note, timestamp):
+    ticket_id = item.get("ticket_id") or item["PK"].removeprefix("TICKET#")
+    old_status = item.get("status", "Registrada")
+    table.update_item(
+        Key={"PK": f"TICKET#{ticket_id}", "SK": "META"},
+        UpdateExpression="SET #st = :new, updated_at = :ts",
+        ExpressionAttributeNames={"#st": "status"},
+        ExpressionAttributeValues={":new": new_status, ":ts": timestamp},
+    )
+    table.put_item(Item={
+        "PK": f"TICKET#{ticket_id}",
+        "SK": f"HIST#{timestamp}",
+        "GSI1PK": f"USER#{item.get('user_id', 'UNKNOWN')}",
+        "GSI1SK": f"TS#{timestamp}",
+        "ticket_id": ticket_id,
+        "old_status": old_status,
+        "new_status": new_status,
+        "changed_by": changed_by,
+        "note": note,
+        "timestamp": timestamp,
+        "created_at": timestamp,
+    })
 
 
 def lambda_handler(event, context):
@@ -242,10 +328,17 @@ def lambda_handler(event, context):
                 -90 <= lat <= 90 and -180 <= lon <= 180
             ):
                 return response(400, {"error": "Coordenadas invalidas"})
+            if "incident_time" in data and data["incident_time"] is not None:
+                if not isinstance(data["incident_time"], str) or not data["incident_time"].strip():
+                    return response(400, {"error": "incident_time invalido"})
 
             ticket_id = f"TCK-{uuid.uuid4().hex[:12].upper()}"
             geohash = encode_geohash(lat, lon)
+            timestamp = now_utc()
+            incident_time = data.get("incident_time") or timestamp
             data["ticket_id"] = ticket_id
+            data["timestamp"] = timestamp
+            data["incident_time"] = incident_time
             data.setdefault("email", "")
             data.setdefault("phone", "")
             queue_url = sqs.get_queue_url(QueueName="telecorp-tickets-q")["QueueUrl"]
@@ -254,6 +347,7 @@ def lambda_handler(event, context):
                 "ticket_id": ticket_id,
                 "status": "Registrada",
                 "geohash": geohash,
+                "incident_time": incident_time,
             })
         except (ValueError, TypeError) as error:
             return response(400, {"error": str(error)})
@@ -401,8 +495,78 @@ def lambda_handler(event, context):
             "updated_at": timestamp,
         })
 
+    if method == "PATCH" and path.startswith("/incidentes/") and path.endswith("/estado"):
+        incident_id = path[len("/incidentes/"):-len("/estado")].strip("/")
+        if not incident_id or "/" in incident_id:
+            return response(400, {"error": "incident_id invalido"})
+        try:
+            data = json.loads(event.get("body") or "{}")
+        except (ValueError, TypeError):
+            return response(400, {"error": "JSON invalido"})
+        new_status = data.get("new_status")
+        if new_status not in VALID_STATUSES:
+            return response(400, {"error": "Estado invalido"})
+        changed_by = data.get("changed_by") or "OPERADOR"
+        note = data.get("note") or f"Incidente actualizado a {new_status}"
+        key = {"PK": f"INCIDENT#{incident_id}", "SK": "META"}
+        inc = table.get_item(Key=key, ConsistentRead=True).get("Item")
+        if not inc:
+            return response(404, {"error": "Incidente no encontrado"})
+        timestamp = now_utc()
+        if new_status in ("Solucionada", "Cerrada"):
+            table.update_item(
+                Key=key,
+                UpdateExpression="SET #st = :st, updated_at = :ts, closed_at = :ca, GSI1PK = :gpk",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={
+                    ":st": new_status, ":ts": timestamp, ":ca": timestamp, ":gpk": "ACTIVE#false"
+                },
+            )
+        else:
+            table.update_item(
+                Key=key,
+                UpdateExpression="SET #st = :st, updated_at = :ts",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":st": new_status, ":ts": timestamp},
+            )
+        linked = [
+            x for x in scan_all()
+            if x.get("PK", "").startswith("TICKET#") and x.get("SK") == "META"
+            and x.get("master_incident_id") == incident_id
+            and x.get("status") not in ("Solucionada", "Cerrada")
+        ]
+        for t in linked:
+            _update_ticket_item(t, new_status, changed_by, note, timestamp)
+        if new_status == "Solucionada":
+            events.put_events(Entries=[{
+                "Source": "telecorp.operaciones",
+                "DetailType": "incidente.solucionado",
+                "Detail": json.dumps({
+                    "incident_id": incident_id,
+                    "ticket_id": linked[0].get("ticket_id", "") if linked else "",
+                    "geohash": inc.get("geohash", ""),
+                    "new_status": new_status,
+                    "changed_by": changed_by,
+                    "note": note,
+                    "timestamp": timestamp,
+                }),
+                "EventBusName": "telecorp-bus",
+            }])
+        return response(200, {
+            "incident_id": incident_id,
+            "new_status": new_status,
+            "updated_tickets": len(linked),
+            "updated_at": timestamp,
+        })
+
     if method == "GET" and path == "/tickets":
         return get_tickets(event.get("queryStringParameters") or {})
+
+    if method == "GET" and path == "/incidentes":
+        return get_incidentes()
+
+    if method == "GET" and path == "/antenas":
+        return get_antenas()
 
     if method == "GET" and path == "/analytics/resumen":
         return response(200, make_analytics())

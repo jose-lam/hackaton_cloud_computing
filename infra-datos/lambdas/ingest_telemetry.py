@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import datetime
 from decimal import Decimal
 
@@ -103,6 +104,7 @@ def process_telemetry(data):
         status = "SATURADA"
 
     geohash = encode_geohash(lat, lon)
+    zone_name = str(data.get("zone_name") or f"Zona {geohash}")
     key = {"PK": f"ANTENNA#{antenna_id}", "SK": "CURRENT"}
 
     previous_item = table.get_item(
@@ -123,14 +125,16 @@ def process_telemetry(data):
     table.update_item(
         Key=key,
         UpdateExpression=(
-            "SET antenna_id=:id, geohash=:geo, "
+            "SET antenna_id=:id, zone_name=:zn, geohash=:geo, "
             "GSI1PK=:gpk, GSI1SK=:gsk, "
             "lat=:lat, lon=:lon, "
             "last_traffic_gb=:traffic, "
-            "health_status=:status, updated_at=:ts"
+            "health_status=:status, updated_at=:ts, "
+            "structural_risk=if_not_exists(structural_risk, :sr)"
         ),
         ExpressionAttributeValues={
             ":id": antenna_id,
+            ":zn": zone_name,
             ":geo": geohash,
             ":gpk": f"ZONA#{geohash}",
             ":gsk": f"ANTENNA#{antenna_id}",
@@ -138,11 +142,11 @@ def process_telemetry(data):
             ":lon": Decimal(str(lon)),
             ":traffic": traffic,
             ":status": status,
-            ":ts": timestamp
+            ":ts": timestamp,
+            ":sr": False
         }
     )
 
-    # Registrar evento historico ante estado anomalo (cambio de estado o nuevo dia)
     if status != "NORMAL":
         if previous_status != status or previous_updated[:10] != date_day:
             table.put_item(
@@ -159,7 +163,6 @@ def process_telemetry(data):
                     "updated_at": timestamp
                 }
             )
-    # Cerrar ultimo evento anomalo con recovered_at y duration_sec al volver a NORMAL
     elif previous_status and previous_status != "NORMAL":
         resp = table.query(
             KeyConditionExpression=Key("PK").eq(f"ANTENNA#{antenna_id}") & Key("SK").begins_with("EVENT#"),
@@ -183,6 +186,8 @@ def process_telemetry(data):
                 }
             )
 
+    print(f"Antena {antenna_id}: {traffic} GB/min -> {status}")
+
     if status != "NORMAL" or drop:
         detail = {
             "antenna_id": antenna_id,
@@ -196,33 +201,38 @@ def process_telemetry(data):
             "health_status": status,
             "timestamp": timestamp
         }
+        return antenna_id, {
+            "Source": "telecorp.telemetria",
+            "DetailType": "antena.anomalia",
+            "Detail": json.dumps(detail),
+            "EventBusName": "telecorp-bus"
+        }
 
-        response = events.put_events(
-            Entries=[{
-                "Source": "telecorp.telemetria",
-                "DetailType": "antena.anomalia",
-                "Detail": json.dumps(detail),
-                "EventBusName": "telecorp-bus"
-            }]
-        )
-
-        if response["FailedEntryCount"] > 0:
-            raise RuntimeError("Error publicando en EventBridge")
-
-    print(f"Antena {antenna_id}: {traffic} GB/min -> {status}")
+    return None, None
 
 
 def lambda_handler(event, context):
     failures = []
+    anomaly_by_antenna = {}
 
     for record in event["Records"]:
         try:
             data = json.loads(record["body"])
-            process_telemetry(data)
+            antenna_id, eb_entry = process_telemetry(data)
+            if antenna_id and eb_entry:
+                anomaly_by_antenna[antenna_id] = eb_entry
         except Exception as error:
             print(f"Error: {error}")
             failures.append({
                 "itemIdentifier": record["messageId"]
             })
+
+    entries = list(anomaly_by_antenna.values())
+    for idx, entry in enumerate(entries):
+        response = events.put_events(Entries=[entry])
+        if response["FailedEntryCount"] > 0:
+            raise RuntimeError("Error publicando en EventBridge")
+        if idx < len(entries) - 1:
+            time.sleep(0.25)
 
     return {"batchItemFailures": failures}
